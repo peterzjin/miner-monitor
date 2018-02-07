@@ -17,12 +17,14 @@
 #include <U8g2lib.h>
 #include <U8x8lib.h>
 #include <Adafruit_INA219.h>
-#include <MQTT.h>
-#include <PubSubClient.h>
-#include <PubSubClient_JSON.h>
 #include <DallasTemperature.h>
 #include <Wire.h>
 #include <pcf8574_esp.h>
+#include <MQTT.h>
+#include <PubSubClient.h>
+#include <PubSubClient_JSON.h>
+#include <ArduinoJson.h>
+#include <Timer.h>
 
 #define HOME_SSID "JDJ_HOME"
 #define HOME_PASSWD "120207100425"
@@ -48,6 +50,23 @@ PCF857x pcf8574(0x27, &Wire);
 //U8G2_ST7920_128X64_F_SW_SPI u8g2(U8G2_R0, D5, D7, D8);
 U8G2_ST7920_128X64_F_HW_SPI u8g2(U8G2_R0, D8);
 
+typedef void (*timer_cb)();
+typedef struct {
+  int id;
+  int interval;
+  timer_cb callback;
+} TimerTask;
+void update_temp();
+void update_tacho_pwm();
+void update_disp();
+TimerTask tasks[] = {
+  {-1, 2000, update_temp},
+  {-1, 2000, update_tacho_pwm},
+  {-1, 2000, update_disp},
+};
+#define TASKS_NUM (sizeof(tasks) / sizeof(TimerTask))
+Timer task_list;
+
 float temp_val[TEMP_SENSOR_NO];
 int tacho_pwm_addr[TACHO_PWM_NO] = {TACHO_PWM_ADDR1, TACHO_PWM_ADDR2};
 int pwm_val[TACHO_PWM_NO];
@@ -56,6 +75,8 @@ bool curr_tacho_pwm = 0;
 int volt, amp;
 
 void setup() {
+  int i;
+
   Serial.begin(115200);
   Serial.println("HELLO WORLD!");
 
@@ -66,13 +87,17 @@ void setup() {
   sensors.setWaitForConversion(FALSE);
   INA219.begin();
   u8g2.begin();
+
+  for (i = 0; i < TASKS_NUM; i++) {
+    tasks[i].id = task_list.every(tasks[i].interval, tasks[i].callback);
+  }
 }
 
 void loop() {
-  int input_pwm_val = 0, i, j;
-  unsigned char val_h, val_l;
-  unsigned long t1, t2, t3, t4, t5;
   String str;
+  int input_pwm_val = 0;
+  WiFiClient client;
+  DynamicJsonBuffer jsonBuffer1, jsonBuffer2;
 
 /*
   delay(1000);
@@ -80,6 +105,7 @@ void loop() {
   return;
   */
 
+/*
   if (WiFi.status() != WL_CONNECTED) {
     Serial.print("Connecting to ");
     Serial.print(HOME_SSID);
@@ -91,6 +117,25 @@ void loop() {
 
     Serial.println("WiFi connected");
   }
+
+  if (client.connect("192.168.2.216", 1111)) {
+    client.println("{\"id\":0,\"jsonrpc\":\"2.0\",\"method\":\"miner_getstat1\"}");
+    String line = client.readStringUntil('\r');
+    Serial.println(line);
+    client.stop();
+    JsonObject& root = jsonBuffer1.parseObject(line);
+    int uptime = root["result"][1];
+    Serial.println(uptime);
+    //JsonArray& hashrate = root["result"][3];
+    String str = root["result"][3];
+    Serial.println(str);
+    str.replace(';', ',');
+    JsonArray& hashrate = jsonBuffer2.parseArray("["+str+"]");
+    Serial.println(hashrate.size());
+  } else {
+    Serial.println("Cannot connect to peter-m1");
+  }
+*/
 
   /*
   Serial.println(WiFi.localIP());
@@ -111,7 +156,35 @@ void loop() {
   }
   */
 
-  t1 = millis();
+  task_list.update();
+
+  while (Serial.available() > 0) {
+    char s_val = 0;
+
+    s_val = Serial.read();
+    if (s_val >= 48 && s_val <= 57) {
+      input_pwm_val = 10 * input_pwm_val + s_val - 48;
+    }
+  }
+
+  if (input_pwm_val > 0 && input_pwm_val < 80) {
+    Serial.print("I received: ");
+    Serial.println(input_pwm_val);
+
+    Wire.beginTransmission(TACHO_PWM_ADDR1);
+    Wire.write(input_pwm_val);
+    Wire.endTransmission();
+
+    Wire.beginTransmission(TACHO_PWM_ADDR2);
+    Wire.write(input_pwm_val);
+    Wire.endTransmission();
+  }
+
+}
+
+void update_temp() {
+  int i;
+
   sensors.requestTemperatures();
   for (i = 0; i < TEMP_SENSOR_NO; i++) {
     temp_val[i] = sensors.getTempCByIndex(i);
@@ -120,8 +193,12 @@ void loop() {
     Serial.print(" ");
   }
   Serial.println();
+}
 
-  t2 = millis();
+void update_tacho_pwm() {
+  int i, j;
+  unsigned char val_h, val_l;
+
   for (i = 0; i < TACHO_PWM_NO; i++) {
     j = 0;
     Wire.requestFrom(tacho_pwm_addr[i], TACHO_PINS_NO * 2 + 1);
@@ -131,7 +208,6 @@ void loop() {
         Serial.println(pwm_val[i]);
       } else {
         val_l = Wire.read();
-        
         val_h = Wire.read();
         tacho_val[i][j] = ((val_h << 8) + val_l) * RPM_MULTI;
         Serial.print(tacho_val[i][j]);
@@ -140,14 +216,9 @@ void loop() {
       }
     }
   }
+}
 
-  t3 = millis();
-/*
-  volt = INA219.getBusVoltage_V() * 10;
-  amp = abs(INA219.getCurrent_mA()) / 10;
-*/
-
-  t4 = millis();
+void update_disp() {
   #if 0
   u8g2.firstPage();
   do {
@@ -178,54 +249,6 @@ void loop() {
   u8g2.sendBuffer();
   #endif
   curr_tacho_pwm = !curr_tacho_pwm;
-
-  t5 = millis();
-
-#if 0
-  str = t1;
-  str += " (";
-  str += (t2 - t1);
-  str += ") ";
-  str += t2;
-  str += " (";
-  str += (t3 - t2);
-  str += ") ";
-  str += t3;
-  str += " (";
-  str += (t4 - t3);
-  str += ") ";
-  str += t4;
-  str += " (";
-  str += (t5 - t4);
-  str += ") ";
-  str += t5;
-  Serial.println(str);
-#endif
-
-  while (Serial.available() > 0) {
-    char s_val = 0;
-
-    s_val = Serial.read();
-    if (s_val >= 48 && s_val <= 57) {
-      input_pwm_val = 10 * input_pwm_val + s_val - 48;
-    }
-  }
-
-  if (input_pwm_val > 0 && input_pwm_val < 80) {
-    Serial.print("I received: ");
-    Serial.println(input_pwm_val);
-    
-    Wire.beginTransmission(TACHO_PWM_ADDR1);
-    Wire.write(input_pwm_val);
-    Wire.endTransmission();
-
-    Wire.beginTransmission(TACHO_PWM_ADDR2);
-    Wire.write(input_pwm_val);
-    Wire.endTransmission();
-  }
-
-out:
-  delay(2000);
 }
 
 String get_str_int(int *buf, int sz, int offset, int width) {
