@@ -38,6 +38,7 @@
 
 #define TEMP_FONT u8g2_font_crox4t_tn
 #define RPM_FONT u8g2_font_ncenR08_tn
+#define MINER_FONT u8g2_font_ncenR08_tr
 #define VOLT_AMP_FONT u8g2_font_timR08_tn
 
 OneWire oneWire(ONE_WIRE_BUS);
@@ -251,6 +252,7 @@ void update_tacho_pwm() {
 
 /* The task to draw the display */
 void update_disp() {
+  String str;
   #if 0
   u8g2.firstPage();
   do {
@@ -268,8 +270,19 @@ void update_disp() {
   #else
   u8g2.clearBuffer();
   u8g2.setFont(TEMP_FONT);
-  get_str_float(temp_val, 3, 0, 5);
   u8g2.drawStr(0, 13, get_str_float(temp_val, 3, 0, 5).c_str());
+  u8g2.setFont(MINER_FONT);
+  str = String(miners_s[0].t_hash / 1000) + "m "
+        + average(miners_s[0].temp, miners_s[0].gpu_num) + "c "
+        + miners_s[0].uptime / 60 + "h " + miners_s[1].t_hash + "m "
+        + average(miners_s[1].temp, miners_s[1].gpu_num) + "c "
+        + miners_s[1].uptime / 60 + "h";
+  u8g2.drawStr(0, 23, str.c_str());
+  str = String(miners_s[2].t_hash) + "m "
+        + average(miners_s[2].temp, miners_s[2].gpu_num) + "c "
+        + miners_s[2].uptime / 60 + "h";
+  u8g2.drawStr(0, 32, str.c_str());
+  /*
   u8g2.setFont(RPM_FONT);
   u8g2.drawStr(0, 23, get_str_int(tacho_val[curr_tacho_pwm], 5, 0, 4).c_str());
   u8g2.setFont(RPM_FONT);
@@ -278,9 +291,9 @@ void update_disp() {
   u8g2.drawStr(114, 23, get_str_int(&volt, 1, 0, 3).c_str());
   u8g2.setFont(VOLT_AMP_FONT);
   u8g2.drawStr(114, 32, get_str_int(&amp, 1, 0, 3).c_str());
+  */
   u8g2.sendBuffer();
   #endif
-  curr_tacho_pwm = !curr_tacho_pwm;
 }
 
 /* The task to get the info from miners */
@@ -290,13 +303,12 @@ void update_miners() {
   DynamicJsonBuffer json_buf;
   int i, j, tmp_array[MAX_GPU_PER_MINER * 2];
 
-  if (!SYS_WIFI_CONNECTED) {
+  if (!SYS_WIFI_CONNECTED)
     return;
-  }
 
   for (i = 0; i < MINERS_NUM; i++) {
     if (!client.connect(miners[i].ip_host, miners[i].port))
-      break;
+      continue;
 
     switch (miners[i].type) {
       case CLAYMORE_ETH:
@@ -369,7 +381,7 @@ void update_miners() {
       str = String("  ") + j + ": " + miners_s[i].hash[j] + " Mh/s "
             + miners_s[i].temp[j] + "C (" + miners_s[i].accepted_s[j] + " "
             + miners_s[i].rejected_s[j] + " " + miners_s[i].invalid_s[j] + ")";
-      Serial.println(str);
+    Serial.println(str);
     }
   }
 }
@@ -441,3 +453,16 @@ int str2array(String str, char sep, int *array, int max_size) {
 
   return i;
 }
+
+int average(int *buf, int num) {
+  int i, sum = 0;
+
+  if (num <= 0)
+    return 0;
+
+  for (i = 0; i < num; i++)
+    sum += buf[i];
+
+  return (sum / num);
+}
+
