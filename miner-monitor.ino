@@ -60,18 +60,21 @@ void update_temp();
 void update_tacho_pwm();
 void update_disp();
 void update_miners();
+void memory_state();
 TimerTask tasks[] = {
   {-1,  500, update_wifi_status},
   {-1, 2000, update_temp},
   {-1, 2000, update_tacho_pwm},
   {-1, 2000, update_disp},
   {-1, 9999, update_miners},
+  {-1, 9999, memory_state},
 };
 #define TASKS_NUM (sizeof(tasks) / sizeof(TimerTask))
 Timer task_list;
 
 #define MAX_GPU_PER_MINER 6
 enum miner_type {
+  CLAYMORE_ETH_DUAL,
   CLAYMORE_ETH,
   CLAYMORE_ZEC,
   ZM_ZEC,
@@ -82,7 +85,7 @@ typedef struct {
   enum miner_type type;
 } Miner;
 Miner miners[] = {
-  {.ip_host = "peter-m1", .port = 1111, .type = CLAYMORE_ETH},
+  {.ip_host = "peter-m1", .port = 1111, .type = CLAYMORE_ETH_DUAL},
   {.ip_host = "peter-pc", .port = 2222, .type = CLAYMORE_ZEC},
   {.ip_host = "peter-pc", .port = 4444, .type = ZM_ZEC},
 };
@@ -91,6 +94,7 @@ typedef struct {
   int gpu_num;
   int uptime;
   int t_hash;
+  int t_d_hash;
   int t_accepted_s;
   int t_rejected_s;
   int t_invalid_s;
@@ -273,12 +277,13 @@ void update_disp() {
   u8g2.drawStr(0, 13, get_str_float(temp_val, 3, 0, 5).c_str());
   u8g2.setFont(MINER_FONT);
   str = String(miners_s[0].t_hash / 1000) + "m "
+        + miners_s[0].t_d_hash / 1000 + "m "
         + average(miners_s[0].temp, miners_s[0].gpu_num) + "c "
-        + miners_s[0].uptime / 60 + "h " + miners_s[1].t_hash + "m "
-        + average(miners_s[1].temp, miners_s[1].gpu_num) + "c "
-        + miners_s[1].uptime / 60 + "h";
+        + miners_s[0].uptime / 60 + "h";
   u8g2.drawStr(0, 23, str.c_str());
-  str = String(miners_s[2].t_hash) + "m "
+  str = String(miners_s[1].t_hash) + "m "
+        + average(miners_s[1].temp, miners_s[1].gpu_num) + "c "
+        + miners_s[1].uptime / 60 + "h " + miners_s[2].t_hash + "m "
         + average(miners_s[2].temp, miners_s[2].gpu_num) + "c "
         + miners_s[2].uptime / 60 + "h";
   u8g2.drawStr(0, 32, str.c_str());
@@ -307,14 +312,21 @@ void update_miners() {
     return;
 
   for (i = 0; i < MINERS_NUM; i++) {
-    if (!client.connect(miners[i].ip_host, miners[i].port))
+    if (!client.connect(miners[i].ip_host, miners[i].port)) {
+      Serial.print("Cannot connect to ");
+      Serial.print(miners[i].ip_host);
+      Serial.print(":");
+      Serial.println(miners[i].port);
       continue;
+    }
 
     switch (miners[i].type) {
+      case CLAYMORE_ETH_DUAL:
       case CLAYMORE_ETH:
       case CLAYMORE_ZEC:
         {
-          if (miners[i].type == CLAYMORE_ETH)
+          if (miners[i].type == CLAYMORE_ETH_DUAL
+              || miners[i].type == CLAYMORE_ETH)
             client.println(
               "{\"id\":0,\"jsonrpc\":\"2.0\",\"method\":\"miner_getstat2\"}");
           else
@@ -328,7 +340,8 @@ void update_miners() {
           miners_s[i].t_hash = tmp_array[0];
           miners_s[i].t_accepted_s = tmp_array[1];
           miners_s[i].t_rejected_s = tmp_array[2];
-          //Serial.println(result.get<String>(2));
+          str2array(result[4], ';', tmp_array, 3);
+          miners_s[i].t_d_hash = tmp_array[0];
           miners_s[i].gpu_num = str2array(result[3], ';',
               miners_s[i].hash, MAX_GPU_PER_MINER);
           str2array(result[6], ';', tmp_array, MAX_GPU_PER_MINER * 2);
@@ -384,6 +397,11 @@ void update_miners() {
     Serial.println(str);
     }
   }
+}
+
+void memory_state() {
+  Serial.print("ESP.getFreeHeap()=");
+  Serial.println(ESP.getFreeHeap());
 }
 
 String get_str_int(int *buf, int sz, int offset, int width) {
