@@ -25,8 +25,7 @@
 #include <ArduinoJson.h>
 #include <Timer.h>
 
-#define HOME_SSID "tomato-h118b"
-#define HOME_PASSWD "1859132301"
+#include "FS.h"
 
 #define ONE_WIRE_BUS D1
 #define TACHO_PWM_ADDR1 8
@@ -108,10 +107,20 @@ typedef struct {
 } Miner_s;
 Miner_s miners_s[MINERS_NUM];
 
+typedef struct {
+  String ssid;
+  String passwd;
+} Sys_cfg;
+Sys_cfg sys_cfg;
+
+#define SYS_CFG_FILE_PATH "/sys.cfg"
+
 unsigned int system_status;
 
-#define SYS_WIFI_CONN_BIT   0
+#define SYS_CFG_LOAD_BIT    0
+#define SYS_WIFI_CONN_BIT   1
 #define SYS_WIFI_CONNECTED  bitRead(system_status, SYS_WIFI_CONN_BIT)
+#define SYS_CFG_LOADED      bitRead(system_status, SYS_CFG_LOAD_BIT)
 
 float temp_val[TEMP_SENSOR_NO];
 int tacho_pwm_addr[TACHO_PWM_NO] = {TACHO_PWM_ADDR1, TACHO_PWM_ADDR2};
@@ -137,19 +146,37 @@ void setup() {
   for (i = 0; i < TASKS_NUM; i++) {
     tasks[i].id = task_list.every(tasks[i].interval, tasks[i].callback);
   }
+
+  SPIFFS.begin();
+
+  File f = SPIFFS.open(SYS_CFG_FILE_PATH, "r");
+  if (!f) {
+    Serial.println("System CFG File open failed.");
+  } else {
+    DynamicJsonBuffer json_buf;
+    String str = f.readStringUntil('}') + '}';
+    JsonObject& cfg = json_buf.parseObject(str);
+
+    f.close();
+    //Serial.println(str);
+    sys_cfg.ssid = String(cfg.get<char*>("SSID"));
+    sys_cfg.passwd = String(cfg.get<char*>("PASSWD"));
+
+    if (sys_cfg.ssid.length())
+      bitSet(system_status, SYS_CFG_LOAD_BIT);
+  }
+
+  SPIFFS.end();
 }
 
 void loop() {
-  String str;
   int input_pwm_val = 0;
-  WiFiClient client;
 
   /*
   delay(1000);
   Serial.println("TEST");
   return;
   */
-
 
   /*
   Serial.println(WiFi.localIP());
@@ -198,11 +225,14 @@ void loop() {
 
 /* The task to update the wifi status */
 void update_wifi_status() {
+  if (!SYS_CFG_LOADED)
+    return;
+
   if (WiFi.status() != WL_CONNECTED) {
     Serial.print("Connecting to ");
-    Serial.print(HOME_SSID);
+    Serial.print(sys_cfg.ssid);
     Serial.println("...");
-    WiFi.begin(HOME_SSID, HOME_PASSWD);
+    WiFi.begin(sys_cfg.ssid.c_str(), sys_cfg.passwd.c_str());
 
     if (WiFi.waitForConnectResult() != WL_CONNECTED) {
       bitClear(system_status, SYS_WIFI_CONN_BIT);
