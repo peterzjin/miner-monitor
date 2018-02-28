@@ -19,9 +19,7 @@
 #include <DallasTemperature.h>
 #include <Wire.h>
 #include <pcf8574_esp.h>
-#include <MQTT.h>
 #include <PubSubClient.h>
-#include <PubSubClient_JSON.h>
 #include <ArduinoJson.h>
 #include <Timer.h>
 
@@ -60,6 +58,7 @@ void update_tacho_pwm();
 void update_disp();
 void update_miners();
 void memory_state();
+void send_mqtt();
 TimerTask tasks[] = {
   {-1,  500, update_wifi_status},
   {-1, 2000, update_temp},
@@ -67,6 +66,7 @@ TimerTask tasks[] = {
   {-1, 2000, update_disp},
   {-1, 9999, update_miners},
   {-1, 9999, memory_state},
+  {-1, 9999, send_mqtt},
 };
 #define TASKS_NUM (sizeof(tasks) / sizeof(TimerTask))
 Timer task_list;
@@ -108,8 +108,12 @@ typedef struct {
 Miner_s miners_s[MINERS_NUM];
 
 typedef struct {
-  String ssid;
-  String passwd;
+  String    ssid;
+  String    passwd;
+  String    mqtt_server;
+  uint16_t  mqtt_port;
+  String    mqtt_user;
+  String    mqtt_passwd;
 } Sys_cfg;
 Sys_cfg sys_cfg;
 
@@ -122,6 +126,8 @@ unsigned int system_status;
 #define SYS_WIFI_CONNECTED  bitRead(system_status, SYS_WIFI_CONN_BIT)
 #define SYS_CFG_LOADED      bitRead(system_status, SYS_CFG_LOAD_BIT)
 
+WiFiClient espclient;
+PubSubClient mqtt_client(espclient);
 float temp_val[TEMP_SENSOR_NO];
 int tacho_pwm_addr[TACHO_PWM_NO] = {TACHO_PWM_ADDR1, TACHO_PWM_ADDR2};
 int pwm_val[TACHO_PWM_NO];
@@ -161,9 +167,17 @@ void setup() {
     //Serial.println(str);
     sys_cfg.ssid = String(cfg.get<char*>("SSID"));
     sys_cfg.passwd = String(cfg.get<char*>("PASSWD"));
+    sys_cfg.mqtt_server = String(cfg.get<char*>("MQTT_SERVER"));
+    sys_cfg.mqtt_user = String(cfg.get<char*>("MQTT_USER"));
+    sys_cfg.mqtt_passwd = String(cfg.get<char*>("MQTT_PASSWD"));
+    sys_cfg.mqtt_port = cfg.get<int>("MQTT_PORT");
+    sys_cfg.mqtt_port = sys_cfg.mqtt_port == 0 ? 1883 : sys_cfg.mqtt_port;
 
-    if (sys_cfg.ssid.length())
+    if (sys_cfg.ssid.length()) {
       bitSet(system_status, SYS_CFG_LOAD_BIT);
+      if (sys_cfg.mqtt_server.length())
+        mqtt_client.setServer(sys_cfg.mqtt_server.c_str(), sys_cfg.mqtt_port);
+    }
   }
 
   SPIFFS.end();
@@ -432,9 +446,43 @@ void update_miners() {
   }
 }
 
+/* The task to track the free heap memory */
 void memory_state() {
   Serial.print("ESP.getFreeHeap()=");
   Serial.println(freeheap = ESP.getFreeHeap());
+}
+
+/* The task to send mqtt data to the server */
+void send_mqtt() {
+  DynamicJsonBuffer json_buf;
+  String str;
+  int i;
+
+  if (!SYS_WIFI_CONNECTED)
+    return;
+
+  if (!mqtt_client.connected()) {
+    if (!mqtt_client.connect(sys_cfg.mqtt_user.c_str(),
+         sys_cfg.mqtt_user.c_str(), sys_cfg.mqtt_passwd.c_str())) {
+      Serial.print("Cannot connect to the MQTT Server ");
+      Serial.print(sys_cfg.mqtt_server);
+      Serial.print(":");
+      Serial.println(sys_cfg.mqtt_port);
+      return;
+    }
+  }
+  //Serial.println("MQTT connected.");
+
+  JsonObject& root = json_buf.createObject();
+
+  root["temp_sensors"] = TEMP_SENSOR_NO;
+  JsonArray& temp = root.createNestedArray("temperature");
+  for (i = 0; i < TEMP_SENSOR_NO; i++)
+    temp.add(temp_val[i]);
+
+  //root.printTo(Serial);
+  root.printTo(str);
+  mqtt_client.publish("miner_state", str.c_str());
 }
 
 String get_str_int(int *buf, int sz, int offset, int width) {
