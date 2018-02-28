@@ -25,8 +25,8 @@
 #include <ArduinoJson.h>
 #include <Timer.h>
 
-#define HOME_SSID "JDJ_HOME"
-#define HOME_PASSWD "120207100425"
+#define HOME_SSID "tomato-h118b"
+#define HOME_PASSWD "1859132301"
 
 #define ONE_WIRE_BUS D1
 #define TACHO_PWM_ADDR1 8
@@ -119,6 +119,7 @@ int pwm_val[TACHO_PWM_NO];
 int tacho_val[TACHO_PWM_NO][TACHO_PINS_NO];
 bool curr_tacho_pwm = 0;
 int volt, amp;
+int freeheap;
 
 void setup() {
   int i;
@@ -279,7 +280,7 @@ void update_disp() {
   str = String(miners_s[0].t_hash / 1000) + "m "
         + miners_s[0].t_d_hash / 1000 + "m "
         + average(miners_s[0].temp, miners_s[0].gpu_num) + "c "
-        + miners_s[0].uptime / 60 + "h";
+        + miners_s[0].uptime / 60 + "h " + freeheap;
   u8g2.drawStr(0, 23, str.c_str());
   str = String(miners_s[1].t_hash) + "m "
         + average(miners_s[1].temp, miners_s[1].gpu_num) + "c "
@@ -333,7 +334,6 @@ void update_miners() {
             client.println(
               "{\"id\":0,\"jsonrpc\":\"2.0\",\"method\":\"miner_getstat1\"}");
           str = client.readStringUntil('}') + '}';
-          client.stop();
           JsonArray& result = (json_buf.parseObject(str))["result"];
           miners_s[i].uptime = result[1];
           str2array(result[2], ';', tmp_array, 3);
@@ -362,7 +362,6 @@ void update_miners() {
           client.println("{\"id\":1, \"method\":\"getstat\"}");
           str = client.readStringUntil('}') + '}';
           str += client.readStringUntil('}') + '}';
-          client.stop();
           //Serial.println(str);
           JsonObject& root = json_buf.parseObject(str);
           miners_s[i].uptime = ((int)root["uptime"]) / 60;
@@ -385,6 +384,10 @@ void update_miners() {
       default:
         break;
     }
+
+    client.flush();
+    client.stop();
+
     str = String(miners[i].ip_host) + ": " + miners_s[i].uptime / 60 + "H"
           + miners_s[i].uptime % 60 + "M "+ miners_s[i].gpu_num + " GPUS "
           + miners_s[i].t_hash + " Mh/s (" + miners_s[i].t_accepted_s + " "
@@ -401,7 +404,7 @@ void update_miners() {
 
 void memory_state() {
   Serial.print("ESP.getFreeHeap()=");
-  Serial.println(ESP.getFreeHeap());
+  Serial.println(freeheap = ESP.getFreeHeap());
 }
 
 String get_str_int(int *buf, int sz, int offset, int width) {
