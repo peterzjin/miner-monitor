@@ -8,5 +8,21 @@ The sys.cfg should be something like:
 }
 
 The command to create the RRD database:
-rrdtool create miner_state.rrd --step 10 DS:temp1:GAUGE:20:0:100 DS:temp2:GAUGE:20:0:100 DS:temp3:GAUGE:20:0:100 RRA:AVERAGE:0.5:1:8640
+rrdtool create miner_state.rrd --step 10	\
+	DS:s_temp0:GAUGE:20:0:100	\
+	DS:s_temp1:GAUGE:20:0:100	\
+	DS:s_temp2:GAUGE:20:0:100	\
+	DS:s_temp3:GAUGE:20:0:100	\
+	DS:s_temp4:GAUGE:20:0:100	\
+	DS:m_temp0:GAUGE:20:0:100	\
+	DS:m_temp1:GAUGE:20:0:100	\
+	DS:m_temp2:GAUGE:20:0:100	\
+	DS:m_temp3:GAUGE:20:0:100	\
+	DS:m_temp4:GAUGE:20:0:100	\
+	DS:m_hash0:GAUGE:20:0:9999	\
+	DS:m_hash1:GAUGE:20:0:9999	\
+	DS:m_hash2:GAUGE:20:0:9999	\
+	DS:m_hash3:GAUGE:20:0:9999	\
+	DS:m_hash4:GAUGE:20:0:9999	\
+	RRA:AVERAGE:0.5:1:8640
 

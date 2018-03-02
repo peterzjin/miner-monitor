@@ -3,8 +3,6 @@ import json
 import sys
 import os
 
-#rrdtool create miner_state.rrd --step 10 DS:temp1:GAUGE:20:0:100 DS:temp2:GAUGE:20:0:100 DS:temp3:GAUGE:20:0:100 RRA:AVERAGE:0.5:1:8640
-
 def on_connect(client, userdata, flags, rc):
     print("Connected with result code "+str(rc))
     client.subscribe(mqtt_topic)
@@ -12,7 +10,21 @@ def on_connect(client, userdata, flags, rc):
 def on_message(client, userdata, msg):
     print(msg.topic+" "+str(msg.payload))
     jmsg = json.loads(msg.payload)
-    cmd="rrdtool update miner_state.rrd N:"+str(jmsg["temperature"][0])+":"+str(jmsg["temperature"][1])+":"+str(jmsg["temperature"][2])
+    sensors = jmsg["temp_sensors"]
+    miners = jmsg["miners"]
+    cmd = "rrdtool update miner_state.rrd -t "
+    cmd_t = ""
+    cmd_N = ""
+    for i in range(sensors):
+        cmd_t += ("s_temp" + str(i) + ":")
+	cmd_N += (str(jmsg["s_temp"][i]) + ":")
+
+    for i in range(miners):
+        cmd_t += ("m_temp" + str(i) + ":" + "m_hash" + str(i) + ":")
+        cmd_N += (str(jmsg["m_temp"][i]) + ":" + str(jmsg["m_hash"][i]) + ":")
+
+    cmd += cmd_t[0:-1] + " N:" + cmd_N[0:-1]
+
     print(cmd)
     os.system(cmd)
 

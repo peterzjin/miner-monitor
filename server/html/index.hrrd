@@ -1,24 +1,106 @@
- #!/usr/bin/rrdcgi
- <HTML>
- <HEAD><TITLE>Miner State</TITLE></HEAD>
- <BODY>
- <H1>The water temperature</H1>
- <P>
- <RRD::GRAPH temp1.png --lazy --title="The water temperature"
-          DEF:cel=/home/peter/miner-monitor/server/miner_state.rrd:temp1:AVERAGE
-          LINE2:cel#00a000:"D. Celsius">
- </P>
- <H1>The outlet air temperature</H1>
- <P>
- <RRD::GRAPH temp2.png --lazy --title="The outlet air temperature"
-          DEF:cel=/home/peter/miner-monitor/server/miner_state.rrd:temp2:AVERAGE
-          LINE2:cel#00a000:"D. Celsius">
- </P>
- <H1>The inlet air temperature</H1>
- <P>
- <RRD::GRAPH temp3.png --lazy --title="The inlet air temperature"
-          DEF:cel=/home/peter/miner-monitor/server/miner_state.rrd:temp3:AVERAGE
-          LINE2:cel#00a000:"D. Celsius">
- </P>
- </BODY>
- </HTML>
+#!/usr/bin/rrdcgi
+<HTML>
+<HEAD><TITLE>Miner State</TITLE></HEAD>
+<meta http-equiv="refresh" content="360">
+<BODY>
+
+<P>
+  <font size="3" color="gray">
+    Now: <RRD::TIME::NOW '%a, %d %b %Y %H:%M'> Last Update: <RRD::TIME::LAST ../miner_state.rrd '%a, %d %b %Y %H:%M'>
+  </font>
+</P>
+
+<table border="1">
+  <tr>
+    <td>
+      <RRD::GRAPH s_temp0.png --lazy --title="The water temperature" -w 520 -h 240
+               DEF:val=../miner_state.rrd:s_temp0:AVERAGE
+               LINE1:val#00a000:"D. Celsius"
+               GPRINT:val:LAST:"Current\:%2.2lf"
+               GPRINT:val:MAX:"Max\:%2.2lf"
+               GPRINT:val:MIN:"Min\:%2.2lf"
+               GPRINT:val:AVERAGE:"Avg\:%2.2lf">
+    </td>
+    <td>
+      <RRD::GRAPH s_temp1.png --lazy --title="The outlet air temperature" -w 520 -h 240
+               DEF:val=../miner_state.rrd:s_temp1:AVERAGE
+               LINE1:val#00a000:"D. Celsius"
+               GPRINT:val:LAST:"Current\:%2.2lf"
+               GPRINT:val:MAX:"Max\:%2.2lf"
+               GPRINT:val:MIN:"Min\:%2.2lf"
+               GPRINT:val:AVERAGE:"Avg\:%2.2lf">
+    </td>
+    <td>
+      <RRD::GRAPH s_temp2.png --lazy --title="The inlet air temperature" -w 520 -h 240
+               DEF:val=../miner_state.rrd:s_temp2:AVERAGE
+               LINE1:val#00a000:"D. Celsius"
+               GPRINT:val:LAST:"Current\:%2.2lf"
+               GPRINT:val:MAX:"Max\:%2.2lf"
+               GPRINT:val:MIN:"Min\:%2.2lf"
+               GPRINT:val:AVERAGE:"Avg\:%2.2lf">
+    </td>
+  </tr>
+
+  <tr>
+    <td>
+      <RRD::GRAPH m_temp0.png --lazy --title="The miner #0 temperature" -w 520 -h 240
+               DEF:val=../miner_state.rrd:m_temp0:AVERAGE
+               LINE1:val#00a000:"D. Celsius"
+               GPRINT:val:LAST:"Current\:%2.2lf"
+               GPRINT:val:MAX:"Max\:%2.2lf"
+               GPRINT:val:MIN:"Min\:%2.2lf"
+               GPRINT:val:AVERAGE:"Avg\:%2.2lf">
+    </td>
+    <td>
+      <RRD::GRAPH m_temp1.png --lazy --title="The miner #1 temperature" -w 520 -h 240
+               DEF:val=../miner_state.rrd:m_temp1:AVERAGE
+               LINE1:val#00a000:"D. Celsius"
+               GPRINT:val:LAST:"Current\:%2.2lf"
+               GPRINT:val:MAX:"Max\:%2.2lf"
+               GPRINT:val:MIN:"Min\:%2.2lf"
+               GPRINT:val:AVERAGE:"Avg\:%2.2lf">
+    </td>
+    <td>
+      <RRD::GRAPH m_temp2.png --lazy --title="The miner #2 temperature" -w 520 -h 240
+               DEF:val=../miner_state.rrd:m_temp2:AVERAGE
+               LINE1:val#00a000:"D. Celsius"
+               GPRINT:val:LAST:"Current\:%2.2lf"
+               GPRINT:val:MAX:"Max\:%2.2lf"
+               GPRINT:val:MIN:"Min\:%2.2lf"
+               GPRINT:val:AVERAGE:"Avg\:%2.2lf">
+    </td>
+  </tr>
+
+  <tr>
+    <td>
+      <RRD::GRAPH m_hash0.png --lazy --title="The miner #0 hash" -w 520 -h 240
+               DEF:val=../miner_state.rrd:m_hash0:AVERAGE
+               LINE1:val#00a000:"MH/s"
+               GPRINT:val:LAST:"Current\:%4.2lf"
+               GPRINT:val:MAX:"Max\:%4.2lf"
+               GPRINT:val:MIN:"Min\:%4.2lf"
+               GPRINT:val:AVERAGE:"Avg\:%4.2lf">
+    </td>
+    <td>
+      <RRD::GRAPH m_hash1.png --lazy --title="The miner #1 hash" -w 520 -h 240
+               DEF:val=../miner_state.rrd:m_hash1:AVERAGE
+               LINE1:val#00a000:"MH/s"
+               GPRINT:val:LAST:"Current\:%4.2lf"
+               GPRINT:val:MAX:"Max\:%4.2lf"
+               GPRINT:val:MIN:"Min\:%4.2lf"
+               GPRINT:val:AVERAGE:"Avg\:%4.2lf">
+    </td>
+    <td>
+      <RRD::GRAPH m_hash2.png --lazy --title="The miner #2 hash" -w 520 -h 240
+               DEF:val=../miner_state.rrd:m_hash2:AVERAGE
+               LINE1:val#00a000:"MH/s"
+               GPRINT:val:LAST:"Current\:%4.2lf"
+               GPRINT:val:MAX:"Max\:%4.2lf"
+               GPRINT:val:MIN:"Min\:%4.2lf"
+               GPRINT:val:AVERAGE:"Avg\:%4.2lf">
+    </td>
+  </tr>
+</table>
+
+</BODY>
+</HTML>
