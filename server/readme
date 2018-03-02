@@ -1,0 +1,12 @@
+The sys.cfg should be something like:
+
+{
+	"MQTT_SERVER"	:	"xxx",
+	"MQTT_TOPIC"	:	"xxx",
+	"MQTT_USER"	:	"xxx",
+	"MQTT_PASSWD"	:	"xxx"
+}
+
+The command to create the RRD database:
+rrdtool create miner_state.rrd --step 10 DS:temp1:GAUGE:20:0:100 DS:temp2:GAUGE:20:0:100 DS:temp3:GAUGE:20:0:100 RRA:AVERAGE:0.5:1:8640
+

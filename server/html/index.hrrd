@@ -1,0 +1,24 @@
+ #!/usr/bin/rrdcgi
+ <HTML>
+ <HEAD><TITLE>Miner State</TITLE></HEAD>
+ <BODY>
+ <H1>The water temperature</H1>
+ <P>
+ <RRD::GRAPH temp1.png --lazy --title="The water temperature"
+          DEF:cel=/home/peter/miner-monitor/server/miner_state.rrd:temp1:AVERAGE
+          LINE2:cel#00a000:"D. Celsius">
+ </P>
+ <H1>The outlet air temperature</H1>
+ <P>
+ <RRD::GRAPH temp2.png --lazy --title="The outlet air temperature"
+          DEF:cel=/home/peter/miner-monitor/server/miner_state.rrd:temp2:AVERAGE
+          LINE2:cel#00a000:"D. Celsius">
+ </P>
+ <H1>The inlet air temperature</H1>
+ <P>
+ <RRD::GRAPH temp3.png --lazy --title="The inlet air temperature"
+          DEF:cel=/home/peter/miner-monitor/server/miner_state.rrd:temp3:AVERAGE
+          LINE2:cel#00a000:"D. Celsius">
+ </P>
+ </BODY>
+ </HTML>
