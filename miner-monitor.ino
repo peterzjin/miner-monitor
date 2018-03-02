@@ -112,6 +112,7 @@ typedef struct {
   String    passwd;
   String    mqtt_server;
   uint16_t  mqtt_port;
+  String    mqtt_topic;
   String    mqtt_user;
   String    mqtt_passwd;
 } Sys_cfg;
@@ -164,7 +165,7 @@ void setup() {
     JsonObject& cfg = json_buf.parseObject(str);
 
     f.close();
-    //Serial.println(str);
+    Serial.println(str);
     sys_cfg.ssid = String(cfg.get<char*>("SSID"));
     sys_cfg.passwd = String(cfg.get<char*>("PASSWD"));
     sys_cfg.mqtt_server = String(cfg.get<char*>("MQTT_SERVER"));
@@ -172,6 +173,10 @@ void setup() {
     sys_cfg.mqtt_passwd = String(cfg.get<char*>("MQTT_PASSWD"));
     sys_cfg.mqtt_port = cfg.get<int>("MQTT_PORT");
     sys_cfg.mqtt_port = sys_cfg.mqtt_port == 0 ? 1883 : sys_cfg.mqtt_port;
+    sys_cfg.mqtt_topic = String(cfg.get<char*>("MQTT_TOPIC"));
+    if (!sys_cfg.mqtt_topic.length()) {
+      sys_cfg.mqtt_topic = String("example");
+    }
 
     if (sys_cfg.ssid.length()) {
       bitSet(system_status, SYS_CFG_LOAD_BIT);
@@ -323,13 +328,13 @@ void update_disp() {
   u8g2.setFont(MINER_FONT);
   str = String(miners_s[0].t_hash / 1000) + "m "
         + miners_s[0].t_d_hash / 1000 + "m "
-        + average(miners_s[0].temp, miners_s[0].gpu_num) + "c "
+        + (int)average(miners_s[0].temp, miners_s[0].gpu_num) + "c "
         + miners_s[0].uptime / 60 + "h " + freeheap;
   u8g2.drawStr(0, 23, str.c_str());
   str = String(miners_s[1].t_hash) + "m "
-        + average(miners_s[1].temp, miners_s[1].gpu_num) + "c "
+        + (int)average(miners_s[1].temp, miners_s[1].gpu_num) + "c "
         + miners_s[1].uptime / 60 + "h " + miners_s[2].t_hash + "m "
-        + average(miners_s[2].temp, miners_s[2].gpu_num) + "c "
+        + (int)average(miners_s[2].temp, miners_s[2].gpu_num) + "c "
         + miners_s[2].uptime / 60 + "h";
   u8g2.drawStr(0, 32, str.c_str());
   /*
@@ -464,11 +469,12 @@ void send_mqtt() {
   if (!mqtt_client.connected()) {
     if (!mqtt_client.connect(sys_cfg.mqtt_user.c_str(),
          sys_cfg.mqtt_user.c_str(), sys_cfg.mqtt_passwd.c_str())) {
-      Serial.print("Cannot connect to the MQTT Server ");
-      Serial.print(sys_cfg.mqtt_server);
-      Serial.print(":");
-      Serial.println(sys_cfg.mqtt_port);
+      Serial.println("Cannot connect to the MQTT Server " + sys_cfg.mqtt_server + ":"
+                   + sys_cfg.mqtt_port);
       return;
+    } else {
+      Serial.println("Connected to the MQTT Server " + sys_cfg.mqtt_server + ":"
+                   + sys_cfg.mqtt_port);
     }
   }
   //Serial.println("MQTT connected.");
@@ -476,13 +482,22 @@ void send_mqtt() {
   JsonObject& root = json_buf.createObject();
 
   root["temp_sensors"] = TEMP_SENSOR_NO;
-  JsonArray& temp = root.createNestedArray("temperature");
+  JsonArray& s_temp = root.createNestedArray("s_temp");
   for (i = 0; i < TEMP_SENSOR_NO; i++)
-    temp.add(temp_val[i]);
+    s_temp.add(temp_val[i]);
 
-  //root.printTo(Serial);
+  root["miners"] = MINERS_NUM;
+  JsonArray& m_temp = root.createNestedArray("m_temp");
+  JsonArray& m_hash = root.createNestedArray("m_hash");
+  for (i = 0; i < TEMP_SENSOR_NO; i++) {
+    m_temp.add(average(miners_s[i].temp, miners_s[i].gpu_num));
+    m_hash.add((float)(miners_s[i].t_hash > 999 ?
+               (float)miners_s[i].t_hash / 1000 : miners_s[i].t_hash));
+  }
+
   root.printTo(str);
-  mqtt_client.publish("miner_state", str.c_str());
+  //Serial.println(str);
+  mqtt_client.publish(sys_cfg.mqtt_topic.c_str(), str.c_str());
 }
 
 String get_str_int(int *buf, int sz, int offset, int width) {
@@ -553,8 +568,9 @@ int str2array(String str, char sep, int *array, int max_size) {
   return i;
 }
 
-int average(int *buf, int num) {
-  int i, sum = 0;
+float average(int *buf, int num) {
+  int i;
+  float sum = 0;
 
   if (num <= 0)
     return 0;
