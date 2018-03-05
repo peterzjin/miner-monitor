@@ -89,6 +89,7 @@ Miner miners[] = {
   {.ip_host = "peter-pc", .port = 4444, .type = ZM_ZEC},
 };
 #define MINERS_NUM (sizeof(miners) / sizeof(Miner))
+#define OFFLINE_TH 30
 typedef struct {
   int gpu_num;
   int uptime;
@@ -104,6 +105,8 @@ typedef struct {
   int invalid_s[MAX_GPU_PER_MINER];
   int temp[MAX_GPU_PER_MINER];
   int fan[MAX_GPU_PER_MINER];
+  int last_offline;
+  int offtime;
 } Miner_s;
 Miner_s miners_s[MINERS_NUM];
 
@@ -228,8 +231,7 @@ void loop() {
   }
 
   if (input_pwm_val > 0 && input_pwm_val < 80) {
-    Serial.print("I received: ");
-    Serial.println(input_pwm_val);
+    Serial.println(String("I received: ") + input_pwm_val);
 
     Wire.beginTransmission(TACHO_PWM_ADDR1);
     Wire.write(input_pwm_val);
@@ -248,9 +250,7 @@ void update_wifi_status() {
     return;
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.print("Connecting to ");
-    Serial.print(sys_cfg.ssid);
-    Serial.println("...");
+    Serial.println("Connecting to " + sys_cfg.ssid + "...");
     WiFi.begin(sys_cfg.ssid.c_str(), sys_cfg.passwd.c_str());
 
     if (WiFi.waitForConnectResult() != WL_CONNECTED) {
@@ -274,8 +274,7 @@ void update_temp() {
   for (i = 0; i < TEMP_SENSOR_NO; i++) {
     temp_val[i] = sensors.getTempCByIndex(i);
     temp_val[i] = temp_val[i] < 0 ? temp_val[i] * -1 : temp_val[i];
-    Serial.print(temp_val[i]);
-    Serial.print(" ");
+    Serial.print(String(temp_val[i]) + " ");
   }
   Serial.println();
 }
@@ -296,8 +295,7 @@ void update_tacho_pwm() {
         val_l = Wire.read();
         val_h = Wire.read();
         tacho_val[i][j] = ((val_h << 8) + val_l) * RPM_MULTI;
-        Serial.print(tacho_val[i][j]);
-        Serial.print(" ");
+        Serial.print(String(tacho_val[i][j]) + " ");
         j++;
       }
     }
@@ -329,13 +327,16 @@ void update_disp() {
   str = String(miners_s[0].t_hash / 1000) + "m "
         + miners_s[0].t_d_hash / 1000 + "m "
         + (int)average(miners_s[0].temp, miners_s[0].gpu_num) + "c "
-        + miners_s[0].uptime / 60 + "h " + freeheap;
+        + (miners_s[0].gpu_num ? miners_s[0].uptime : miners_s[0].offtime) / 60
+        + "h " + freeheap;
   u8g2.drawStr(0, 23, str.c_str());
   str = String(miners_s[1].t_hash) + "m "
         + (int)average(miners_s[1].temp, miners_s[1].gpu_num) + "c "
-        + miners_s[1].uptime / 60 + "h " + miners_s[2].t_hash + "m "
+        + (miners_s[1].gpu_num ? miners_s[1].uptime : miners_s[1].offtime) / 60
+        + "h " + miners_s[2].t_hash + "m "
         + (int)average(miners_s[2].temp, miners_s[2].gpu_num) + "c "
-        + miners_s[2].uptime / 60 + "h";
+        + (miners_s[2].gpu_num ? miners_s[2].uptime : miners_s[2].offtime) / 60
+        + "h";
   u8g2.drawStr(0, 32, str.c_str());
   /*
   u8g2.setFont(RPM_FONT);
@@ -363,12 +364,21 @@ void update_miners() {
 
   for (i = 0; i < MINERS_NUM; i++) {
     if (!client.connect(miners[i].ip_host, miners[i].port)) {
-      Serial.print("Cannot connect to ");
-      Serial.print(miners[i].ip_host);
-      Serial.print(":");
-      Serial.println(miners[i].port);
+      if (!miners_s[i].last_offline)
+        miners_s[i].last_offline = (int)(millis() / 1000);
+      miners_s[i].offtime = (int)(millis() / 1000 - miners_s[i].last_offline);
+      if (miners_s[i].offtime > OFFLINE_TH && miners_s[i].gpu_num != 0) {
+        int offtime = miners_s[i].offtime;
+        int last_offline = miners_s[i].last_offline;
+        memset(&(miners_s[i]), 0, sizeof(Miner_s));
+        miners_s[i].offtime = offtime;
+        miners_s[i].last_offline = last_offline;
+        Serial.println(String(miners[i].ip_host) + ":" + miners[i].port + " offline");
+      }
+      Serial.println(String("Can't connect to ") + miners[i].ip_host + ":" + miners[i].port);
       continue;
     }
+    miners_s[i].last_offline = 0;
 
     switch (miners[i].type) {
       case CLAYMORE_ETH_DUAL:
@@ -469,12 +479,12 @@ void send_mqtt() {
   if (!mqtt_client.connected()) {
     if (!mqtt_client.connect(sys_cfg.mqtt_user.c_str(),
          sys_cfg.mqtt_user.c_str(), sys_cfg.mqtt_passwd.c_str())) {
-      Serial.println("Cannot connect to the MQTT Server " + sys_cfg.mqtt_server + ":"
-                   + sys_cfg.mqtt_port);
+      Serial.println(String("Cannot connect to the MQTT Server ")
+                     + sys_cfg.mqtt_server + ":" + sys_cfg.mqtt_port);
       return;
     } else {
-      Serial.println("Connected to the MQTT Server " + sys_cfg.mqtt_server + ":"
-                   + sys_cfg.mqtt_port);
+      Serial.println(String("Connected to the MQTT Server ")
+                     + sys_cfg.mqtt_server + ":" + sys_cfg.mqtt_port);
     }
   }
   //Serial.println("MQTT connected.");
@@ -489,7 +499,7 @@ void send_mqtt() {
   root["miners"] = MINERS_NUM;
   JsonArray& m_temp = root.createNestedArray("m_temp");
   JsonArray& m_hash = root.createNestedArray("m_hash");
-  for (i = 0; i < TEMP_SENSOR_NO; i++) {
+  for (i = 0; i < MINERS_NUM; i++) {
     m_temp.add(average(miners_s[i].temp, miners_s[i].gpu_num));
     m_hash.add((float)(miners_s[i].t_hash > 999 ?
                (float)miners_s[i].t_hash / 1000 : miners_s[i].t_hash));
