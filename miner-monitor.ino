@@ -136,6 +136,7 @@ float temp_val[TEMP_SENSOR_NO];
 int tacho_pwm_addr[TACHO_PWM_NO] = {TACHO_PWM_ADDR1, TACHO_PWM_ADDR2};
 int pwm_val[TACHO_PWM_NO];
 int tacho_val[TACHO_PWM_NO][TACHO_PINS_NO];
+int input_pwm_val = 0;
 bool curr_tacho_pwm = 0;
 int volt, amp;
 int freeheap;
@@ -192,7 +193,6 @@ void setup() {
 }
 
 void loop() {
-  int input_pwm_val = 0;
 
   /*
   delay(1000);
@@ -225,23 +225,28 @@ void loop() {
     char s_val = 0;
 
     s_val = Serial.read();
+    //Serial.println((int)s_val);
     if (s_val >= 48 && s_val <= 57) {
       input_pwm_val = 10 * input_pwm_val + s_val - 48;
+    } else if (s_val == 127 /* Backspace */) {
+      input_pwm_val = input_pwm_val / 10;
+    } else if (s_val == 13 /* Enter */) {
+      if (input_pwm_val > 0 && input_pwm_val < 80) {
+        Serial.println(String("Get PWM value: ") + input_pwm_val);
+
+        Wire.beginTransmission(TACHO_PWM_ADDR1);
+        Wire.write(input_pwm_val);
+        Wire.endTransmission();
+
+        Wire.beginTransmission(TACHO_PWM_ADDR2);
+        Wire.write(input_pwm_val);
+        Wire.endTransmission();
+      } else {
+        Serial.println(String("Get invalid PWM value: ") + input_pwm_val);
+      }
+      input_pwm_val = 0;
     }
   }
-
-  if (input_pwm_val > 0 && input_pwm_val < 80) {
-    Serial.println(String("I received: ") + input_pwm_val);
-
-    Wire.beginTransmission(TACHO_PWM_ADDR1);
-    Wire.write(input_pwm_val);
-    Wire.endTransmission();
-
-    Wire.beginTransmission(TACHO_PWM_ADDR2);
-    Wire.write(input_pwm_val);
-    Wire.endTransmission();
-  }
-
 }
 
 /* The task to update the wifi status */
