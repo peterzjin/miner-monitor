@@ -22,6 +22,7 @@
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <Timer.h>
+#include <PID_v1.h>
 
 #include "FS.h"
 
@@ -127,8 +128,15 @@ unsigned int system_status;
 
 #define SYS_CFG_LOAD_BIT    0
 #define SYS_WIFI_CONN_BIT   1
+#define SYS_PWM_PID_BIT     2
 #define SYS_WIFI_CONNECTED  bitRead(system_status, SYS_WIFI_CONN_BIT)
 #define SYS_CFG_LOADED      bitRead(system_status, SYS_CFG_LOAD_BIT)
+#define SYS_PWM_PID_EN      bitRead(system_status, SYS_PWM_PID_BIT)
+
+#define MAX_PWM_VAL 69
+#define MIN_PWM_VAL 16
+double pid_set_point, pid_input, pid_output;
+PID pwm_pid(&pid_input, &pid_output, &pid_set_point, 0.8, 0, 5, DIRECT);
 
 WiFiClient espclient;
 PubSubClient mqtt_client(espclient);
@@ -136,7 +144,7 @@ float temp_val[TEMP_SENSOR_NO];
 int tacho_pwm_addr[TACHO_PWM_NO] = {TACHO_PWM_ADDR1, TACHO_PWM_ADDR2};
 int pwm_val[TACHO_PWM_NO];
 int tacho_val[TACHO_PWM_NO][TACHO_PINS_NO];
-int input_pwm_val = 0;
+int next_pwm_val = 0;
 bool curr_tacho_pwm = 0;
 int volt, amp;
 int freeheap;
@@ -157,6 +165,11 @@ void setup() {
   for (i = 0; i < TASKS_NUM; i++) {
     tasks[i].id = task_list.every(tasks[i].interval, tasks[i].callback);
   }
+
+  pid_set_point = 15;
+  pwm_pid.SetMode(MANUAL);
+  pwm_pid.SetSampleTime(16100);
+  pwm_pid.SetOutputLimits(-10, 10);
 
   SPIFFS.begin();
 
@@ -193,6 +206,7 @@ void setup() {
 }
 
 void loop() {
+  bool need_set_pwm = false;
 
   /*
   delay(1000);
@@ -227,25 +241,47 @@ void loop() {
     s_val = Serial.read();
     //Serial.println((int)s_val);
     if (s_val >= 48 && s_val <= 57) {
-      input_pwm_val = 10 * input_pwm_val + s_val - 48;
+      next_pwm_val = 10 * next_pwm_val + s_val - 48;
     } else if (s_val == 127 /* Backspace */) {
-      input_pwm_val = input_pwm_val / 10;
+      next_pwm_val = next_pwm_val / 10;
     } else if (s_val == 13 /* Enter */) {
-      if (input_pwm_val > 0 && input_pwm_val < 80) {
-        Serial.println(String("Get PWM value: ") + input_pwm_val);
-
-        Wire.beginTransmission(TACHO_PWM_ADDR1);
-        Wire.write(input_pwm_val);
-        Wire.endTransmission();
-
-        Wire.beginTransmission(TACHO_PWM_ADDR2);
-        Wire.write(input_pwm_val);
-        Wire.endTransmission();
-      } else {
-        Serial.println(String("Get invalid PWM value: ") + input_pwm_val);
-      }
-      input_pwm_val = 0;
+      need_set_pwm = true;
+    } else if (s_val == 's') {
+      bitClear(system_status, SYS_PWM_PID_BIT);
+      pwm_pid.SetMode(MANUAL);
+      Serial.println("Stop the PWM PID control.");
+    } else if (s_val == 'p') {
+      bitSet(system_status, SYS_PWM_PID_BIT);
+      pid_output = 0;
+      pwm_pid.SetMode(AUTOMATIC);
+      Serial.println("Start the PWM PID control.");
     }
+  }
+
+  if (SYS_PWM_PID_EN) {
+    if (pwm_pid.Compute()) {
+      Serial.println(String("Current PID input is ") + pid_input
+                     + ", PID output is " + pid_output);
+      next_pwm_val = (int)(0.5 + pwm_val[0] - pid_output);
+      need_set_pwm = true;
+    }
+  }
+
+  if (need_set_pwm) {
+    next_pwm_val = next_pwm_val > MAX_PWM_VAL ? MAX_PWM_VAL :
+                  (next_pwm_val < MIN_PWM_VAL ? MIN_PWM_VAL : next_pwm_val);
+    Serial.println(String("Get PWM value: ") + next_pwm_val);
+
+    if (next_pwm_val != pwm_val[0]) {
+      Wire.beginTransmission(TACHO_PWM_ADDR1);
+      Wire.write(next_pwm_val);
+      Wire.endTransmission();
+
+      Wire.beginTransmission(TACHO_PWM_ADDR2);
+      Wire.write(next_pwm_val);
+      Wire.endTransmission();
+    }
+    next_pwm_val = 0;
   }
 }
 
@@ -281,7 +317,8 @@ void update_temp() {
     temp_val[i] = temp_val[i] < 0 ? temp_val[i] * -1 : temp_val[i];
     Serial.print(String(temp_val[i]) + " ");
   }
-  Serial.println();
+  pid_input = temp_val[0] - temp_val[2];
+  Serial.println(String("delta: ") + pid_input);
 }
 
 /* The task to get the tacho and pwm values from tachometers */
