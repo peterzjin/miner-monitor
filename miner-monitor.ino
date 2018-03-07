@@ -95,12 +95,13 @@ typedef struct {
   int gpu_num;
   int uptime;
   int t_hash;
-  int t_d_hash;
+  int t_dhash;
   int t_accepted_s;
   int t_rejected_s;
   int t_invalid_s;
   int pool_switch;
   int hash[MAX_GPU_PER_MINER];
+  int dhash[MAX_GPU_PER_MINER];
   int accepted_s[MAX_GPU_PER_MINER];
   int rejected_s[MAX_GPU_PER_MINER];
   int invalid_s[MAX_GPU_PER_MINER];
@@ -367,7 +368,7 @@ void update_disp() {
   u8g2.drawStr(0, 13, get_str_float(temp_val, 3, 0, 5).c_str());
   u8g2.setFont(MINER_FONT);
   str = String(miners_s[0].t_hash / 1000) + "m "
-        + miners_s[0].t_d_hash / 1000 + "m "
+        + miners_s[0].t_dhash / 1000 + "m "
         + (int)average(miners_s[0].temp, miners_s[0].gpu_num) + "c "
         + (miners_s[0].gpu_num ? miners_s[0].uptime : miners_s[0].offtime) / 60
         + "h " + freeheap;
@@ -442,9 +443,10 @@ void update_miners() {
           miners_s[i].t_accepted_s = tmp_array[1];
           miners_s[i].t_rejected_s = tmp_array[2];
           str2array(result[4], ';', tmp_array, 3);
-          miners_s[i].t_d_hash = tmp_array[0];
+          miners_s[i].t_dhash = tmp_array[0];
           miners_s[i].gpu_num = str2array(result[3], ';',
               miners_s[i].hash, MAX_GPU_PER_MINER);
+          str2array(result[5], ';', miners_s[i].dhash, MAX_GPU_PER_MINER);
           str2array(result[6], ';', tmp_array, MAX_GPU_PER_MINER * 2);
           for (j = 0; j < miners_s[i].gpu_num; j++) {
             miners_s[i].temp[j] = tmp_array[j * 2];
@@ -513,7 +515,7 @@ void memory_state() {
 void send_mqtt() {
   DynamicJsonBuffer json_buf;
   String str;
-  int i;
+  int i, j, gpus = 0;
 
   if (!SYS_WIFI_CONNECTED)
     return;
@@ -538,17 +540,61 @@ void send_mqtt() {
   for (i = 0; i < TEMP_SENSOR_NO; i++)
     s_temp.add(temp_val[i]);
 
+  root["pwms"] = TACHO_PWM_NO;
+  JsonArray& pwm = root.createNestedArray("pwm");
+  for (i = 0; i < TACHO_PWM_NO; i++)
+    pwm.add(pwm_val[i]);
+
   root["miners"] = MINERS_NUM;
+  JsonArray& m_gpus = root.createNestedArray("m_gpus");
+  JsonArray& m_type = root.createNestedArray("m_type");
   JsonArray& m_temp = root.createNestedArray("m_temp");
   JsonArray& m_hash = root.createNestedArray("m_hash");
+  JsonArray& m_dhash = root.createNestedArray("m_dhash");
+  JsonArray& m_acp_s = root.createNestedArray("m_acp_s");
+  JsonArray& m_rej_s = root.createNestedArray("m_rej_s");
+  JsonArray& m_inc_s = root.createNestedArray("m_inc_s");
+  JsonArray& m_uptime = root.createNestedArray("m_uptime");
+  JsonArray& m_offtime = root.createNestedArray("m_offtime");
+  root["gpus"] = gpus;
+  JsonArray& g_temp = root.createNestedArray("g_temp");
+  JsonArray& g_fan = root.createNestedArray("g_fan");
+  JsonArray& g_hash = root.createNestedArray("g_hash");
+  JsonArray& g_dhash = root.createNestedArray("g_dhash");
+  JsonArray& g_acp_s = root.createNestedArray("g_acp_s");
+  JsonArray& g_rej_s = root.createNestedArray("g_rej_s");
+  JsonArray& g_inc_s = root.createNestedArray("g_inc_s");
   for (i = 0; i < MINERS_NUM; i++) {
+    m_gpus.add(miners_s[i].gpu_num);
+    m_type.add((int)(miners[i].type));
     m_temp.add(average(miners_s[i].temp, miners_s[i].gpu_num));
     m_hash.add((float)(miners_s[i].t_hash > 999 ?
                (float)miners_s[i].t_hash / 1000 : miners_s[i].t_hash));
+    m_dhash.add((float)(miners_s[i].t_dhash > 999 ?
+                (float)miners_s[i].t_dhash / 1000 : miners_s[i].t_dhash));
+    m_acp_s.add(miners_s[i].t_accepted_s);
+    m_rej_s.add(miners_s[i].t_rejected_s);
+    m_inc_s.add(miners_s[i].t_invalid_s);
+    m_uptime.add(miners_s[i].uptime);
+    m_offtime.add(miners_s[i].offtime);
+    gpus += miners_s[i].gpu_num;
+    for (j = 0; j < miners_s[i].gpu_num; j++) {
+      g_temp.add(miners_s[i].temp[j]);
+      g_fan.add(miners_s[i].fan[j]);
+      g_hash.add((float)(miners_s[i].hash[j] > 999 ?
+                 (float)miners_s[i].hash[j] / 1000 : miners_s[i].hash[j]));
+      g_dhash.add((float)(miners_s[i].dhash[j] > 999 ?
+                  (float)miners_s[i].dhash[j] / 1000 : miners_s[i].dhash[j]));
+      g_acp_s.add(miners_s[i].accepted_s[j]);
+      g_rej_s.add(miners_s[i].rejected_s[j]);
+      g_inc_s.add(miners_s[i].invalid_s[j]);
+    }
   }
+  root["gpus"] = gpus;
 
   root.printTo(str);
   //Serial.println(str);
+  //Serial.println(str.length());
   mqtt_client.publish(sys_cfg.mqtt_topic.c_str(), str.c_str());
 }
 
