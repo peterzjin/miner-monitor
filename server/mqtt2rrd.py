@@ -1,4 +1,5 @@
 import paho.mqtt.client as mqtt
+import rrdtool
 import json
 import sys
 import os
@@ -12,21 +13,42 @@ def on_message(client, userdata, msg):
     jmsg = json.loads(msg.payload)
     sensors = jmsg["temp_sensors"]
     miners = jmsg["miners"]
-    cmd = "rrdtool update miner_state.rrd -t "
-    cmd_t = ""
-    cmd_N = ""
+    pwms = jmsg["pwms"]
+    gpus = jmsg["gpus"]
+    cmd_ds = ""
+    cmd_val = "N:"
     for i in range(sensors):
-        cmd_t += ("s_temp" + str(i) + ":")
-	cmd_N += (str(jmsg["s_temp"][i]) + ":")
+        cmd_ds += ("s_temp" + str(i) + ":")
+	cmd_val += (str(jmsg["s_temp"][i]) + ":")
+
+    for i in range(pwms):
+        cmd_ds += ("pwm" + str(i) + ":")
+	cmd_val += (str(jmsg["pwm"][i]) + ":")
 
     for i in range(miners):
-        cmd_t += ("m_temp" + str(i) + ":" + "m_hash" + str(i) + ":")
-        cmd_N += (str(jmsg["m_temp"][i]) + ":" + str(jmsg["m_hash"][i]) + ":")
+        cmd_ds += ("m_temp" + str(i) + ":" + "m_hash" + str(i) + ":"
+                 + "m_dhash" + str(i) + ":" + "m_acp_s" + str(i) + ":"
+                 + "m_rej_s" + str(i) + ":" + "m_inc_s" + str(i) + ":"
+                 + "m_uptime" + str(i) + ":" + "m_offtime" + str(i) + ":")
+        cmd_val += (str(jmsg["m_temp"][i]) + ":" + str(jmsg["m_hash"][i]) + ":"
+                + str(jmsg["m_dhash"][i]) + ":" + str(jmsg["m_acp_s"][i]) + ":"
+                + str(jmsg["m_rej_s"][i]) + ":" + str(jmsg["m_inc_s"][i]) + ":"
+                + str(jmsg["m_uptime"][i]) + ":"
+                + str(jmsg["m_offtime"][i]) + ":")
 
-    cmd += cmd_t[0:-1] + " N:" + cmd_N[0:-1]
+    for i in range(gpus):
+        cmd_ds += ("g_temp" + str(i) + ":" + "g_hash" + str(i) + ":"
+                + "g_dhash" + str(i) + ":" + "g_acp_s" + str(i) + ":"
+                + "g_rej_s" + str(i) + ":" + "g_inc_s" + str(i) + ":"
+                + "g_fan" + str(i) + ":")
+        cmd_val += (str(jmsg["g_temp"][i]) + ":" + str(jmsg["g_hash"][i]) + ":"
+                + str(jmsg["g_dhash"][i]) + ":" + str(jmsg["g_acp_s"][i]) + ":"
+                + str(jmsg["g_rej_s"][i]) + ":" + str(jmsg["g_inc_s"][i]) + ":"
+                + str(jmsg["g_fan"][i]) + ":")
 
-    print(cmd)
-    os.system(cmd)
+    #print(cmd_ds[0:-1])
+    #print(cmd_val[0:-1])
+    rrdtool.update("miner_state.rrd", "-t", cmd_ds[0:-1], cmd_val[0:-1])
 
 client = mqtt.Client()
 
