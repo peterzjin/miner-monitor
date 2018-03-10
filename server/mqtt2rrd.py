@@ -15,8 +15,8 @@ def on_message(client, userdata, msg):
     miners = jmsg["miners"]
     pwms = jmsg["pwms"]
     gpus = jmsg["gpus"]
-    cmd_ds = ""
-    cmd_val = "N:"
+    cmd_ds = "sensors:miners:pwms:gpus:"
+    cmd_val = "N:" + str(sensors) + ":" + str(miners) + ":" + str(pwms) + ":" + str(gpus) + ":"
     for i in range(sensors):
         cmd_ds += ("s_temp" + str(i) + ":")
 	cmd_val += (str(jmsg["s_temp"][i]) + ":")
@@ -26,11 +26,13 @@ def on_message(client, userdata, msg):
 	cmd_val += (str(jmsg["pwm"][i]) + ":")
 
     for i in range(miners):
-        cmd_ds += ("m_temp" + str(i) + ":" + "m_hash" + str(i) + ":"
+        cmd_ds += ("m_gpus" + str(i) + ":" + "m_type" + str(i) + ":"
+                 + "m_temp" + str(i) + ":" + "m_hash" + str(i) + ":"
                  + "m_dhash" + str(i) + ":" + "m_acp_s" + str(i) + ":"
                  + "m_rej_s" + str(i) + ":" + "m_inc_s" + str(i) + ":"
                  + "m_uptime" + str(i) + ":" + "m_offtime" + str(i) + ":")
-        cmd_val += (str(jmsg["m_temp"][i]) + ":" + str(jmsg["m_hash"][i]) + ":"
+        cmd_val += (str(jmsg["m_gpus"][i]) + ":" + str(jmsg["m_type"][i]) + ":"
+                + str(jmsg["m_temp"][i]) + ":" + str(jmsg["m_hash"][i]) + ":"
                 + str(jmsg["m_dhash"][i]) + ":" + str(jmsg["m_acp_s"][i]) + ":"
                 + str(jmsg["m_rej_s"][i]) + ":" + str(jmsg["m_inc_s"][i]) + ":"
                 + str(jmsg["m_uptime"][i]) + ":"

@@ -9,12 +9,24 @@ The sys.cfg should be something like:
 
 The command to create the RRD database:
 rrdtool create miner_state.rrd --step 10s	\
+	DS:sensors:GAUGE:20:0:10		\
+	DS:miners:GAUGE:20:0:10			\
+	DS:pwms:GAUGE:20:0:10			\
+	DS:gpus:GAUGE:20:0:10			\
 	DS:s_temp0:GAUGE:20:1:100		\
 	DS:s_temp1:GAUGE:20:1:100		\
 	DS:s_temp2:GAUGE:20:1:100		\
 	DS:s_temp3:GAUGE:20:1:100		\
 	DS:pwm0:GAUGE:20:1:100			\
 	DS:pwm1:GAUGE:20:1:100			\
+	DS:m_gpus0:GAUGE:20:1:10		\
+	DS:m_gpus1:GAUGE:20:1:10		\
+	DS:m_gpus2:GAUGE:20:1:10		\
+	DS:m_gpus3:GAUGE:20:1:10		\
+	DS:m_type0:GAUGE:20:0:10		\
+	DS:m_type1:GAUGE:20:0:10		\
+	DS:m_type2:GAUGE:20:0:10		\
+	DS:m_type3:GAUGE:20:0:10		\
 	DS:m_temp0:GAUGE:20:1:100		\
 	DS:m_temp1:GAUGE:20:1:100		\
 	DS:m_temp2:GAUGE:20:1:100		\
