@@ -1,3 +1,4 @@
 sys.cfg
 *.png
 *.rrd
+!mining.png

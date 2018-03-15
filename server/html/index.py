@@ -4,7 +4,7 @@ import datetime
 
 def miner_type(n):
     return {
-            0: 'CM_ETH_D',
+            0: 'PHOENIX',
             1: 'CM_ETH',
             2: 'CM_ZEC',
             3: 'ZM_ZEC',
@@ -43,6 +43,32 @@ miners = int(ds['miners'])
 gpus = int(ds['gpus'])
 lu_date = lastupdate['date']
 now_date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+rrdtool.graph('hash.png', '--lazy', '--title', 'The Hash Power',
+        '--width', '500', '--height', '240',
+        'DEF:hash0=../miner_state.rrd:m_hash0:AVERAGE',
+        'DEF:hash1=../miner_state.rrd:m_hash1:AVERAGE',
+        'DEF:hash2=../miner_state.rrd:m_hash2:AVERAGE',
+        'LINE1:hash0#0000ff:Miner#0',
+        'LINE1:hash1#0066ff:Miner#1',
+        'LINE1:hash2#00ccff:Miner#2')
+rrdtool.graph('m_temp.png', '--lazy', '--title', 'The Miner Temperature',
+        '--width', '500', '--height', '240',
+        'DEF:m_temp0=../miner_state.rrd:m_temp0:AVERAGE',
+        'DEF:m_temp1=../miner_state.rrd:m_temp1:AVERAGE',
+        'DEF:m_temp2=../miner_state.rrd:m_temp2:AVERAGE',
+        'LINE1:m_temp0#0000ff:Miner#0',
+        'LINE1:m_temp1#0066ff:Miner#1',
+        'LINE1:m_temp2#00ccff:Miner#2')
+rrdtool.graph('s_temp.png', '--lazy', '--title', 'The Sensor Temperature',
+        '--width', '500', '--height', '240',
+        'DEF:s_temp0=../miner_state.rrd:s_temp0:AVERAGE',
+        'DEF:s_temp1=../miner_state.rrd:s_temp1:AVERAGE',
+        'DEF:s_temp2=../miner_state.rrd:s_temp2:AVERAGE',
+        'DEF:pwm=../miner_state.rrd:pwm0:AVERAGE',
+        'LINE1:s_temp0#00ccff:Water',
+        'LINE1:s_temp1#0066ff:Outlet Air',
+        'LINE1:s_temp2#0000ff:Inlet Air',
+        'LINE1:pwm#000099:PWM')
 
 print '<html>'
 print '<head>'
@@ -79,7 +105,7 @@ for i in range(miners):
         print '<td>Online</td>'
     print '<td>%d</td>' % m_gpus
     print '<td>%s</td>' % miner_type(ds['m_type' + str(i)])
-    if ds['m_type' + str(i)] == 0:
+    if ds['m_dhash' + str(i)] > 0:
         print '<td>%.2f MH/s | %.2f MH/s</td>' % (ds['m_hash' + str(i)], ds['m_dhash' + str(i)])
     else:
         print '<td>%.2f MH/s</td>' % ds['m_hash' + str(i)]
@@ -106,7 +132,7 @@ for i in range(miners):
         for j in range(l_gpus, l_gpus + m_gpus):
             print '<tr>'
             print '<td>#%d</td>' % (j - l_gpus)
-            if ds['m_type' + str(i)] == 0:
+            if ds['m_dhash' + str(i)] > 0:
                 print '<td>%.2f MH/s | %.2f MH/s</td>' % (ds['g_hash' + str(j)], ds['g_dhash' + str(j)])
             else:
                 print '<td>%.2f MH/s</td>' % ds['g_hash' + str(j)] 
@@ -120,5 +146,14 @@ for i in range(miners):
         print '</tr>'
 
 print '</table>'
+
+print '<table class="flatTable">'
+print '<tr>'
+print '<td><img src="hash.png" /></td>'
+print '<td><img src="m_temp.png" /></td>'
+print '<td><img src="s_temp.png" /></td>'
+print '</tr>'
+print '</table>'
+
 print '</body>'
 print '</html>'
