@@ -74,7 +74,7 @@ Timer task_list;
 
 #define MAX_GPU_PER_MINER 6
 enum miner_type {
-  CLAYMORE_ETH_DUAL,
+  PHOENIX,
   CLAYMORE_ETH,
   CLAYMORE_ZEC,
   ZM_ZEC,
@@ -85,7 +85,7 @@ typedef struct {
   enum miner_type type;
 } Miner;
 Miner miners[] = {
-  {.ip_host = "peter-m1", .port = 1111, .type = CLAYMORE_ETH_DUAL},
+  {.ip_host = "peter-m1", .port = 1111, .type = PHOENIX},
   {.ip_host = "peter-pc", .port = 2222, .type = CLAYMORE_ZEC},
   {.ip_host = "peter-pc", .port = 4444, .type = ZM_ZEC},
 };
@@ -424,12 +424,11 @@ void update_miners() {
     miners_s[i].last_offline = 0;
 
     switch (miners[i].type) {
-      case CLAYMORE_ETH_DUAL:
+      case PHOENIX:
       case CLAYMORE_ETH:
       case CLAYMORE_ZEC:
         {
-          if (miners[i].type == CLAYMORE_ETH_DUAL
-              || miners[i].type == CLAYMORE_ETH)
+          if (miners[i].type == CLAYMORE_ETH)
             client.println(
               "{\"id\":0,\"jsonrpc\":\"2.0\",\"method\":\"miner_getstat2\"}");
           else
