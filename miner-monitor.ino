@@ -23,6 +23,7 @@
 #include <ArduinoJson.h>
 #include <Timer.h>
 #include <PID_v1.h>
+#include <mcurses.h>
 
 #include "FS.h"
 
@@ -98,19 +99,54 @@ typedef struct {
   int t_dhash;
   int t_accepted_s;
   int t_rejected_s;
-  int t_invalid_s;
+  int t_incorrect_s;
   int pool_switch;
+  float t_temp;
   int hash[MAX_GPU_PER_MINER];
   int dhash[MAX_GPU_PER_MINER];
   int accepted_s[MAX_GPU_PER_MINER];
   int rejected_s[MAX_GPU_PER_MINER];
-  int invalid_s[MAX_GPU_PER_MINER];
+  int incorrect_s[MAX_GPU_PER_MINER];
   int temp[MAX_GPU_PER_MINER];
   int fan[MAX_GPU_PER_MINER];
   int last_offline;
   int offtime;
 } Miner_s;
 Miner_s miners_s[MINERS_NUM];
+
+#define USE_SCREEN
+#ifdef USE_SCREEN
+#define dlog scr_log
+enum scr_val_type {
+  INT,
+  FLOAT,
+  OK_KO,
+  ON_OFF,
+  R_CHAR,
+  STRING,
+  TIME_SPAN,
+  SHARE_STATE,
+  FLOAT_DELTA,
+};
+typedef struct {
+  enum scr_val_type type;
+  byte y;
+  byte x;
+  void *val1;
+  int val2;
+  union {
+    int val_i;
+    float val_f;
+  } last;
+} Scr_val;
+#define MAX_SCR_VAL 120
+int cur_last_scr_val, log_y, log_x;
+Scr_val scr_val[MAX_SCR_VAL];
+#else
+#define dlog Serial.print
+void setup_screen() { }
+void update_scr() { }
+#endif
 
 typedef struct {
   String    ssid;
@@ -130,9 +166,12 @@ unsigned int system_status;
 #define SYS_CFG_LOAD_BIT    0
 #define SYS_WIFI_CONN_BIT   1
 #define SYS_PWM_PID_BIT     2
+#define SYS_MQTT_CONN_BIT   3
+#define SYS_REDRAW_SCR_BIT  4
 #define SYS_WIFI_CONNECTED  bitRead(system_status, SYS_WIFI_CONN_BIT)
 #define SYS_CFG_LOADED      bitRead(system_status, SYS_CFG_LOAD_BIT)
 #define SYS_PWM_PID_EN      bitRead(system_status, SYS_PWM_PID_BIT)
+#define SYS_REDRAW_SCR      bitRead(system_status, SYS_REDRAW_SCR_BIT)
 
 #define MAX_PWM_VAL 69
 #define MIN_PWM_VAL 16
@@ -154,7 +193,9 @@ void setup() {
   int i;
 
   Serial.begin(115200);
-  Serial.println("HELLO WORLD!");
+
+  setup_screen();
+  update_scr();
 
   Wire.begin(D3, D2);
   pcf8574.begin();
@@ -176,14 +217,14 @@ void setup() {
 
   File f = SPIFFS.open(SYS_CFG_FILE_PATH, "r");
   if (!f) {
-    Serial.println("System CFG File open failed.");
+    dlog("System CFG File open failed.\r\n");
   } else {
     DynamicJsonBuffer json_buf;
     String str = f.readStringUntil('}') + '}';
     JsonObject& cfg = json_buf.parseObject(str);
 
     f.close();
-    Serial.println(str);
+    dlog(str + "\r\n");
     sys_cfg.ssid = String(cfg.get<char*>("SSID"));
     sys_cfg.passwd = String(cfg.get<char*>("PASSWD"));
     sys_cfg.mqtt_server = String(cfg.get<char*>("MQTT_SERVER"));
@@ -211,26 +252,26 @@ void loop() {
 
   /*
   delay(1000);
-  Serial.println("TEST");
+  dlog("TEST");
   return;
   */
 
   /*
-  Serial.println(WiFi.localIP());
-  Serial.println(WiFi.gatewayIP());
+  dlog(WiFi.localIP());
+  dlog(WiFi.gatewayIP());
   {
     IPAddress ip (192, 168, 2, 1); // The remote ip to ping
     bool ret = Ping.ping(ip);
     int avg_time_ms = Ping.averageTime();
     long rssi;
-    Serial.println(ret);
-    Serial.println(avg_time_ms);
+    dlog(ret);
+    dlog(avg_time_ms);
     ret = Ping.ping("peter-m1");
     avg_time_ms = Ping.averageTime();
-    Serial.println(ret);
-    Serial.println(avg_time_ms);
+    dlog(ret);
+    dlog(avg_time_ms);
     rssi = WiFi.RSSI();
-    Serial.println(rssi);
+    dlog(rssi);
   }
   */
 
@@ -240,7 +281,7 @@ void loop() {
     char s_val = 0;
 
     s_val = Serial.read();
-    //Serial.println((int)s_val);
+    //dlog((int)s_val);
     if (s_val >= 48 && s_val <= 57) {
       next_pwm_val = 10 * next_pwm_val + s_val - 48;
     } else if (s_val == 127 /* Backspace */) {
@@ -250,19 +291,22 @@ void loop() {
     } else if (s_val == 's') {
       bitClear(system_status, SYS_PWM_PID_BIT);
       pwm_pid.SetMode(MANUAL);
-      Serial.println("Stop the PWM PID control.");
+      dlog("Stop the PWM PID control.\r\n");
     } else if (s_val == 'p') {
       bitSet(system_status, SYS_PWM_PID_BIT);
       pid_output = 0;
       pwm_pid.SetMode(AUTOMATIC);
-      Serial.println("Start the PWM PID control.");
+      dlog("Start the PWM PID control.\r\n");
+    } else if (s_val == 'r') {
+      bitSet(system_status, SYS_REDRAW_SCR_BIT);
+      dlog("Re-Draw the Screen.\r\n");
     }
   }
 
   if (SYS_PWM_PID_EN) {
     if (pwm_pid.Compute()) {
-      Serial.println(String("Current PID input is ") + pid_input
-                     + ", PID output is " + pid_output);
+      dlog(String("Current PID input is ") + pid_input
+                + ", PID output is " + pid_output + "\r\n");
       next_pwm_val = (int)(0.5 + pwm_val[0] - pid_output);
       need_set_pwm = true;
     }
@@ -271,7 +315,7 @@ void loop() {
   if (need_set_pwm) {
     next_pwm_val = next_pwm_val > MAX_PWM_VAL ? MAX_PWM_VAL :
                   (next_pwm_val < MIN_PWM_VAL ? MIN_PWM_VAL : next_pwm_val);
-    Serial.println(String("Get PWM value: ") + next_pwm_val);
+    dlog(String("Get PWM value: ") + next_pwm_val + "\r\n");
 
     if (next_pwm_val != pwm_val[0]) {
       Wire.beginTransmission(TACHO_PWM_ADDR1);
@@ -292,7 +336,7 @@ void update_wifi_status() {
     return;
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Connecting to " + sys_cfg.ssid + "...");
+    dlog("Connecting to " + sys_cfg.ssid + "...\r\n");
     WiFi.begin(sys_cfg.ssid.c_str(), sys_cfg.passwd.c_str());
 
     if (WiFi.waitForConnectResult() != WL_CONNECTED) {
@@ -302,7 +346,7 @@ void update_wifi_status() {
 
     bitSet(system_status, SYS_WIFI_CONN_BIT);
 
-    Serial.println("WiFi connected");
+    dlog("WiFi connected\r\n");
   } else {
     bitSet(system_status, SYS_WIFI_CONN_BIT);
   }
@@ -316,10 +360,10 @@ void update_temp() {
   for (i = 0; i < TEMP_SENSOR_NO; i++) {
     temp_val[i] = sensors.getTempCByIndex(i);
     temp_val[i] = temp_val[i] < 0 ? temp_val[i] * -1 : temp_val[i];
-    Serial.print(String(temp_val[i]) + " ");
+    dlog(String(temp_val[i]) + " ");
   }
   pid_input = temp_val[0] - temp_val[2];
-  Serial.println(String("delta: ") + pid_input);
+  dlog(String("delta: ") + pid_input + "\r\n");
 }
 
 /* The task to get the tacho and pwm values from tachometers */
@@ -333,12 +377,12 @@ void update_tacho_pwm() {
     while (Wire.available()) {
       if (j == TACHO_PINS_NO) {
         pwm_val[i] = Wire.read();
-        Serial.println(pwm_val[i]);
+        dlog(String(pwm_val[i]) + "\r\n");
       } else {
         val_l = Wire.read();
         val_h = Wire.read();
         tacho_val[i][j] = ((val_h << 8) + val_l) * RPM_MULTI;
-        Serial.print(String(tacho_val[i][j]) + " ");
+        dlog(String(tacho_val[i][j]) + " ");
         j++;
       }
     }
@@ -369,15 +413,15 @@ void update_disp() {
   u8g2.setFont(MINER_FONT);
   str = String(miners_s[0].t_hash / 1000) + "m "
         + miners_s[0].t_dhash / 1000 + "m "
-        + (int)average(miners_s[0].temp, miners_s[0].gpu_num) + "c "
+        + (int)miners_s[0].t_temp + "c "
         + (miners_s[0].gpu_num ? miners_s[0].uptime : miners_s[0].offtime) / 60
         + "h " + freeheap;
   u8g2.drawStr(0, 23, str.c_str());
   str = String(miners_s[1].t_hash) + "m "
-        + (int)average(miners_s[1].temp, miners_s[1].gpu_num) + "c "
+        + (int)miners_s[1].t_temp + "c "
         + (miners_s[1].gpu_num ? miners_s[1].uptime : miners_s[1].offtime) / 60
         + "h " + miners_s[2].t_hash + "m "
-        + (int)average(miners_s[2].temp, miners_s[2].gpu_num) + "c "
+        + (int)miners_s[2].t_temp + "c "
         + (miners_s[2].gpu_num ? miners_s[2].uptime : miners_s[2].offtime) / 60
         + "h";
   u8g2.drawStr(0, 32, str.c_str());
@@ -393,6 +437,8 @@ void update_disp() {
   */
   u8g2.sendBuffer();
   #endif
+
+  update_scr();
 }
 
 /* The task to get the info from miners */
@@ -416,9 +462,9 @@ void update_miners() {
         memset(&(miners_s[i]), 0, sizeof(Miner_s));
         miners_s[i].offtime = offtime;
         miners_s[i].last_offline = last_offline;
-        Serial.println(String(miners[i].ip_host) + ":" + miners[i].port + " offline");
+        dlog(String(miners[i].ip_host) + ":" + miners[i].port + " offline\r\n");
       }
-      Serial.println(String("Can't connect to ") + miners[i].ip_host + ":" + miners[i].port);
+      dlog(String("Can't connect to ") + miners[i].ip_host + ":" + miners[i].port + "\r\n");
       continue;
     }
     miners_s[i].last_offline = 0;
@@ -452,11 +498,11 @@ void update_miners() {
             miners_s[i].fan[j] = tmp_array[j * 2 + 1];
           }
           str2array(result[8], ';', tmp_array, MAX_GPU_PER_MINER * 2);
-          miners_s[i].t_invalid_s = tmp_array[0];
+          miners_s[i].t_incorrect_s = tmp_array[0];
           miners_s[i].pool_switch = tmp_array[1];
           str2array(result[9], ';', miners_s[i].accepted_s, MAX_GPU_PER_MINER);
           str2array(result[10], ';', miners_s[i].rejected_s, MAX_GPU_PER_MINER);
-          str2array(result[11], ';', miners_s[i].invalid_s, MAX_GPU_PER_MINER);
+          str2array(result[11], ';', miners_s[i].incorrect_s, MAX_GPU_PER_MINER);
         }
         break;
       case ZM_ZEC:
@@ -464,7 +510,7 @@ void update_miners() {
           client.println("{\"id\":1, \"method\":\"getstat\"}");
           str = client.readStringUntil('}') + '}';
           str += client.readStringUntil('}') + '}';
-          //Serial.println(str);
+          //dlog(str);
           JsonObject& root = json_buf.parseObject(str);
           miners_s[i].uptime = ((int)root["uptime"]) / 60;
           JsonArray& result = root["result"];
@@ -486,6 +532,7 @@ void update_miners() {
       default:
         break;
     }
+    miners_s[i].t_temp = average(miners_s[i].temp, miners_s[i].gpu_num);
 
     client.flush();
     client.stop();
@@ -493,21 +540,21 @@ void update_miners() {
     str = String(miners[i].ip_host) + ": " + miners_s[i].uptime / 60 + "H"
           + miners_s[i].uptime % 60 + "M "+ miners_s[i].gpu_num + " GPUS "
           + miners_s[i].t_hash + " Mh/s (" + miners_s[i].t_accepted_s + " "
-          + miners_s[i].t_rejected_s + " " + miners_s[i].t_invalid_s + ")";
-    Serial.println(str);
+          + miners_s[i].t_rejected_s + " " + miners_s[i].t_incorrect_s + ")";
+    dlog(str + "\r\n");
     for (j = 0; j < miners_s[i].gpu_num; j++) {
       str = String("  ") + j + ": " + miners_s[i].hash[j] + " Mh/s "
             + miners_s[i].temp[j] + "C (" + miners_s[i].accepted_s[j] + " "
-            + miners_s[i].rejected_s[j] + " " + miners_s[i].invalid_s[j] + ")";
-    Serial.println(str);
+            + miners_s[i].rejected_s[j] + " " + miners_s[i].incorrect_s[j] + ")";
+    dlog(str + "\r\n");
     }
   }
 }
 
 /* The task to track the free heap memory */
 void memory_state() {
-  Serial.print("ESP.getFreeHeap()=");
-  Serial.println(freeheap = ESP.getFreeHeap());
+  dlog("ESP.getFreeHeap()=");
+  dlog(String(freeheap = ESP.getFreeHeap()) + "\r\n");
 }
 
 /* The task to send mqtt data to the server */
@@ -522,15 +569,17 @@ void send_mqtt() {
   if (!mqtt_client.connected()) {
     if (!mqtt_client.connect(sys_cfg.mqtt_user.c_str(),
          sys_cfg.mqtt_user.c_str(), sys_cfg.mqtt_passwd.c_str())) {
-      Serial.println(String("Cannot connect to the MQTT Server ")
-                     + sys_cfg.mqtt_server + ":" + sys_cfg.mqtt_port);
+      bitClear(system_status, SYS_MQTT_CONN_BIT);
+      dlog(String("Cannot connect to the MQTT Server ")
+                 + sys_cfg.mqtt_server + ':' + sys_cfg.mqtt_port + "\r\n");
       return;
     } else {
-      Serial.println(String("Connected to the MQTT Server ")
-                     + sys_cfg.mqtt_server + ":" + sys_cfg.mqtt_port);
+      dlog(String("Connected to the MQTT Server ")
+                 + sys_cfg.mqtt_server + ':' + sys_cfg.mqtt_port + "\r\n");
     }
   }
-  //Serial.println("MQTT connected.");
+  bitSet(system_status, SYS_MQTT_CONN_BIT);
+  //dlog("MQTT connected.\r\n");
 
   JsonObject& root = json_buf.createObject();
 
@@ -566,14 +615,14 @@ void send_mqtt() {
   for (i = 0; i < MINERS_NUM; i++) {
     m_gpus.add(miners_s[i].gpu_num);
     m_type.add((int)(miners[i].type));
-    m_temp.add(average(miners_s[i].temp, miners_s[i].gpu_num));
+    m_temp.add(miners_s[i].t_temp);
     m_hash.add((float)(miners_s[i].t_hash > 999 ?
                (float)miners_s[i].t_hash / 1000 : miners_s[i].t_hash));
     m_dhash.add((float)(miners_s[i].t_dhash > 999 ?
                 (float)miners_s[i].t_dhash / 1000 : miners_s[i].t_dhash));
     m_acp_s.add(miners_s[i].t_accepted_s);
     m_rej_s.add(miners_s[i].t_rejected_s);
-    m_inc_s.add(miners_s[i].t_invalid_s);
+    m_inc_s.add(miners_s[i].t_incorrect_s);
     m_uptime.add(miners_s[i].uptime);
     m_offtime.add(miners_s[i].offtime);
     gpus += miners_s[i].gpu_num;
@@ -586,16 +635,284 @@ void send_mqtt() {
                   (float)miners_s[i].dhash[j] / 1000 : miners_s[i].dhash[j]));
       g_acp_s.add(miners_s[i].accepted_s[j]);
       g_rej_s.add(miners_s[i].rejected_s[j]);
-      g_inc_s.add(miners_s[i].invalid_s[j]);
+      g_inc_s.add(miners_s[i].incorrect_s[j]);
     }
   }
   root["gpus"] = gpus;
 
   root.printTo(str);
-  //Serial.println(str);
-  //Serial.println(str.length());
+  //dlog(str);
+  //dlog(str.length());
   mqtt_client.publish(sys_cfg.mqtt_topic.c_str(), str.c_str());
 }
+
+#ifdef USE_SCREEN
+void Arduino_putchar(uint8_t c) {
+  Serial.write(c);
+}
+
+void scr_log(const char *str) {
+  int orig_x, orig_y;
+  char ch;
+
+  if (str == NULL || *str == '\0')
+    return;
+
+  if (log_x == 0)
+    scroll();
+
+  getyx(orig_y, orig_x);
+  while (ch = *(str++)) {
+    if (ch == '\r') {
+      continue;
+    } else if (ch == '\n') {
+      log_x = 0;
+      scr_log(str);
+      break;
+    } else {
+      mvaddch(log_y, log_x++, ch);
+    }
+  }
+  move(orig_y, orig_x);
+}
+
+void scr_log(String str) {
+  scr_log(str.c_str());
+}
+
+byte add_scr_val(enum scr_val_type type, byte y, byte x, void* val1, int val2) {
+  scr_val[cur_last_scr_val].type       = type;
+  scr_val[cur_last_scr_val].y          = y;
+  scr_val[cur_last_scr_val].x          = x;
+  scr_val[cur_last_scr_val].val1       = val1;
+  scr_val[cur_last_scr_val].val2       = val2;
+  scr_val[cur_last_scr_val].last.val_i = -1;
+  cur_last_scr_val++;
+
+  switch (type) {
+    case INT:
+    case FLOAT:
+    case R_CHAR:
+    case FLOAT_DELTA:
+      x += val2;
+      break;
+    case OK_KO:
+      x += 2;  /* OK or KO */
+      break;
+    case ON_OFF:
+      x += 6;  /* ONLINE or OFLINE*/
+      break;
+    case TIME_SPAN:
+      x += 9;  /* 99D23H59M */
+      break;
+    case SHARE_STATE:
+      x += 18; /* 3312/1/0    99.00% */
+      break;
+    case STRING:
+      x += strlen((char*)val1);
+      break;
+    default:
+    break;
+  }
+
+  return x;
+}
+
+/*
+                                  Miner State
+--------------------------------------------------------------------------------
+ System | WIFI: OK | CFG: OK | PID: KO  TARGET: 00  PWM: 28/28 | MQTT: OK
+ Sensor | Inlet: 18.37c | Water: 31.31c | Outlet: 31.56c | Delta: 12.94c
+ Fan0   | 4095 | 4125 | 3855 | 5970 | 5820 | 5775 | 5835 | 1065 | 5745 | 0000
+ Miner0 | 6 | ONLINE | 170MH/s | 36.33c | 00D23H13M | A/R/I: 3312/1/0 99.00%
+--------------------------------------------------------------------------------
+... ...
+--------------------------------------------------------------------------------
+CMD:
+ */
+void setup_screen() {
+  int col, row = 0, i, j, offset;
+  char *c_str;
+
+  setFunction_putchar(Arduino_putchar);
+  initscr();
+  clear();
+  cur_last_scr_val = 0;
+
+  add_scr_val(STRING, row++, 34, (void *)"Miner State", 0);
+  add_scr_val(R_CHAR, row++, 0, (void *)'-', COLS);
+
+  /* System | WIFI: OK | CFG: OK | PID: KO  TARGET: 00  PWM: 28/28 | MQTT: OK */
+  offset = 0;
+  offset = add_scr_val(STRING, row, offset, (void *)" System | WIFI: ", 0);
+  offset = add_scr_val(OK_KO, row, offset, &system_status, SYS_WIFI_CONN_BIT);
+  offset = add_scr_val(STRING, row, offset, (void *)" | CFG: ", 0);
+  offset = add_scr_val(OK_KO, row, offset, &system_status, SYS_CFG_LOAD_BIT);
+  offset = add_scr_val(STRING, row, offset, (void *)" | PID: ", 0);
+  offset = add_scr_val(OK_KO, row, offset, &system_status, SYS_PWM_PID_BIT);
+  offset = add_scr_val(STRING, row, offset, (void *)"  TARGET: ", 0);
+  offset = add_scr_val(INT, row, offset, &pid_set_point, 2);
+  offset = add_scr_val(STRING, row, offset, (void *)"  PWM: ", 0);
+  offset = add_scr_val(INT, row, offset, &pwm_val[0], 2);
+  offset = add_scr_val(R_CHAR, row, offset, (void *)'/', 1);
+  offset = add_scr_val(INT, row, offset, &pwm_val[1], 2);
+  offset = add_scr_val(STRING, row, offset, (void *)" | MQTT: ", 0);
+  add_scr_val(OK_KO, row++, offset, &system_status, SYS_MQTT_CONN_BIT);
+
+  /* Sensor | Inlet: 18.37c | Water: 31.31c | Outlet: 31.56c | Delta: 12.94c */
+  offset = 0;
+  offset = add_scr_val(STRING, row, offset, (void *)" Sensor | Inlet: ", 0);
+  offset = add_scr_val(FLOAT, row, offset, &temp_val[2], 5);
+  offset = add_scr_val(STRING, row, offset, (void *)"c | Water: ", 0);
+  offset = add_scr_val(FLOAT, row, offset, &temp_val[0], 5);
+  offset = add_scr_val(STRING, row, offset, (void *)"c | Outlet: ", 0);
+  offset = add_scr_val(FLOAT, row, offset, &temp_val[1], 5);
+  offset = add_scr_val(STRING, row, offset, (void *)"c | Delta: ", 0);
+  add_scr_val(FLOAT_DELTA, row++, offset, &temp_val[0], 5);
+
+  /* Fan0   | 4095 | 4125 | 3855 | 5970 | 5820 | 5775 | 5835 | 1065 | 5745 | 0000 */
+  for (i = 0; i < TACHO_PWM_NO; i++) {
+    sprintf(c_str = strdup(" Fan0  "), " Fan%d  ", i);
+    offset = 0;
+    offset = add_scr_val(STRING, row, offset, c_str, 0);
+    for (j = 0; j < 10; j++, col += 7) {
+      offset = add_scr_val(STRING, row, offset, (void *)" | ", 0);
+      offset = add_scr_val(INT, row, offset, &tacho_val[i][j], 4);
+    }
+    row++;
+  }
+
+  /* Miner0 | 6 | ONLINE | 170MH/s | 36.33c | 00D23H13M | A/R/I: 3312/1/0 99.00% */
+  for (i = 0; i < MINERS_NUM; i++) {
+    sprintf(c_str = strdup(" Miner0 | "), " Miner%d | ", i);
+    offset = 0;
+    offset = add_scr_val(STRING, row, offset, c_str, 0);
+    offset = add_scr_val(INT, row, offset, &(miners_s[i].gpu_num), 1);
+    offset = add_scr_val(STRING, row, offset, (void *)" | ", 0);
+    offset = add_scr_val(ON_OFF, row, offset, &(miners_s[i].gpu_num), 1);
+    offset = add_scr_val(STRING, row, offset, (void *)" | ", 0);
+    offset = add_scr_val(INT, row, offset, &(miners_s[i].t_hash), 3);
+    offset = add_scr_val(STRING, row, offset, (void *)"MH/s | ", 0);
+    offset = add_scr_val(FLOAT, row, offset, &(miners_s[i].t_temp), 5);
+    offset = add_scr_val(STRING, row, offset, (void *)"c | ", 0);
+    offset = add_scr_val(TIME_SPAN, row, offset, &(miners_s[i].uptime), 0);
+    offset = add_scr_val(STRING, row, offset, (void *)" | A/R/I: ", 0);
+    add_scr_val(SHARE_STATE, row, offset, &(miners_s[i].t_accepted_s), 0);
+    row++;
+  }
+
+  add_scr_val(R_CHAR, row++, 0, (void *)'-', COLS);
+  add_scr_val(R_CHAR, LINES - 2, 0, (void *)'-', COLS);
+
+  setscrreg (row, LINES - 3);
+  log_y = LINES - 3;
+  log_x = 0;
+
+  offset = add_scr_val(STRING, LINES - 1, 0, (void *)"CMD: ", 0);
+  move(LINES - 1, offset);
+
+  bitSet(system_status, SYS_REDRAW_SCR_BIT);
+}
+
+void update_scr() {
+  int i, orig_x, orig_y, changed, redraw, val_i;
+  float val_f;
+
+  getyx(orig_y, orig_x);
+  redraw = SYS_REDRAW_SCR;
+  bitClear(system_status, SYS_REDRAW_SCR_BIT);
+  for (i = 0; i < cur_last_scr_val; i++) {
+    String str;
+    changed = 0;
+    switch (scr_val[i].type) {
+      case OK_KO:
+        val_i = bitRead(*(int *)(scr_val[i].val1), scr_val[i].val2);
+        if (val_i != scr_val[i].last.val_i || redraw) {
+          scr_val[i].last.val_i = val_i;
+          changed = 1;
+          str = val_i ? String("OK") : String("KO");
+        }
+        break;
+      case ON_OFF:
+        val_i = *(int *)(scr_val[i].val1);
+        if (val_i != scr_val[i].last.val_i || redraw) {
+          scr_val[i].last.val_i = val_i;
+          changed = 1;
+          str = val_i ? String("ONLINE") : String("OFLINE");
+        }
+        break;
+      case FLOAT:
+      case FLOAT_DELTA:
+        val_f = *(float *)(scr_val[i].val1) - (scr_val[i].type == FLOAT_DELTA ?
+                                  *((float *)scr_val[i].val1 + 2) : 0);
+        if (val_f != scr_val[i].last.val_f || redraw) {
+          scr_val[i].last.val_f = val_f;
+          changed = 1;
+          str = get_str_float(&val_f, 1, 0, scr_val[i].val2);
+        }
+        break;
+      case INT:
+        val_i = *(int *)(scr_val[i].val1);
+        if (val_i != scr_val[i].last.val_i || redraw) {
+          scr_val[i].last.val_i =  val_i;
+          changed = 1;
+          str = get_str_int(&val_i, 1, 0, scr_val[i].val2);
+        }
+        break;
+      case TIME_SPAN:
+        val_i = *(int *)(scr_val[i].val1);
+        if (val_i != scr_val[i].last.val_i || redraw) {
+          int m, h, d;
+          scr_val[i].last.val_i =  val_i;
+          changed = 1;
+          m = val_i % 60;
+          val_i = val_i / 60;
+          h = val_i % 24;
+          d = val_i / 24;
+          str = get_str_int(&d, 1, 0, 2) + 'D' + get_str_int(&h, 1, 0, 2)
+                + 'H' + get_str_int(&m, 1, 0, 2) + 'M';
+        }
+        break;
+      case SHARE_STATE:
+        int acp, rej, inc;
+        val_i  = acp = *((int *)scr_val[i].val1);
+        val_i += rej = *((int *)scr_val[i].val1 + 1);
+        val_i += inc = *((int *)scr_val[i].val1 + 2);
+        if (val_i != scr_val[i].last.val_i || redraw) {
+          scr_val[i].last.val_i = val_i;
+          changed = 1;
+          str = String(acp) + '/' + String(rej) + '/' + String(inc) + ' ';
+          if (val_i) {
+            float rate = ((float)acp * 100) / val_i;
+            str += (get_str_float(&rate, 1, 0, 5)) + '%';
+          } else {
+            str += "NA";
+          }
+        }
+        break;
+      case STRING:
+        if (redraw)
+          mvaddstr(scr_val[i].y, scr_val[i].x, (char *)scr_val[i].val1);
+        break;
+      case R_CHAR:
+        if (redraw) {
+          int j = (int)scr_val[i].val1;
+          char ch = (char)j;
+          move(scr_val[i].y, scr_val[i].x);
+          for (j = 0; j < scr_val[i].val2; j++)
+            addch(ch);
+        }
+        break;
+      default:
+        break;
+    }
+    if (changed)
+      mvaddstr(scr_val[i].y, scr_val[i].x, str.c_str());
+  }
+
+  move(orig_y, orig_x);
+}
+#endif
 
 String get_str_int(int *buf, int sz, int offset, int width) {
   String all_str, str;
@@ -604,7 +921,9 @@ String get_str_int(int *buf, int sz, int offset, int width) {
   for (i = 0; i < sz; i++) {
     str = String(buf[offset + i]);
 
-    if (width > str.length()) {
+    if (width < str.length()) {
+      str.remove(width, str.length() - width);
+    } else {
       for (j = 0; j < width - str.length(); j++) {
         all_str += 0;
       }
