@@ -666,10 +666,15 @@ void scr_log(const char *str) {
   if (str == NULL || *str == '\0')
     return;
 
-  if (log_x == 0)
-    scroll();
-
   getyx(orig_y, orig_x);
+
+  if (log_x == 0) {
+    String prefix = String(" [") + millis() + "] ";
+    scroll();
+    mvaddstr(log_y, log_x, prefix.c_str());
+    log_x += prefix.length();
+  }
+
   while (ch = *(str++)) {
     if (ch == '\r') {
       continue;
@@ -681,6 +686,7 @@ void scr_log(const char *str) {
       mvaddch(log_y, log_x++, ch);
     }
   }
+
   move(orig_y, orig_x);
 }
 
