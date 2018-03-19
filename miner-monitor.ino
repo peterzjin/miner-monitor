@@ -24,6 +24,8 @@
 #include <Timer.h>
 #include <PID_v1.h>
 #include <mcurses.h>
+#include <time.h>
+#include <sntp.h>
 
 #include "FS.h"
 
@@ -119,6 +121,7 @@ Miner_s miners_s[MINERS_NUM];
 #define dlog scr_log
 enum scr_val_type {
   INT,
+  DATE,
   FLOAT,
   OK_KO,
   ON_OFF,
@@ -137,6 +140,7 @@ typedef struct {
   union {
     int val_i;
     float val_f;
+    time_t val_t;
   } last;
 } Scr_val;
 #define MAX_SCR_VAL 120
@@ -245,6 +249,10 @@ void setup() {
   }
 
   SPIFFS.end();
+
+  sntp_init();
+  sntp_setservername(0, "pool.ntp.org");
+  sntp_set_timezone(8);
 }
 
 void loop() {
@@ -711,6 +719,9 @@ byte add_scr_val(enum scr_val_type type, byte y, byte x, void* val1, int val2) {
     case STRING:
       x += strlen((char*)val1);
       break;
+    case DATE:
+      x += 24; /*Mon Mar 19 08:09:18 2018*/
+      break;
     default:
     break;
   }
@@ -719,7 +730,7 @@ byte add_scr_val(enum scr_val_type type, byte y, byte x, void* val1, int val2) {
 }
 
 /*
-                                  Miner State
+      Miner State  ( Mon Mar 19 08:09:18 2018 --- Mon Mar 19 08:09:18 2018 )
 --------------------------------------------------------------------------------
  System | WIFI: OK | CFG: OK | PID: KO  TARGET: 00  PWM: 28/28 | MQTT: OK
  Sensor | Inlet: 18.37c | Water: 31.31c | Outlet: 31.56c | Delta: 12.94c
@@ -739,7 +750,15 @@ void setup_screen() {
   clear();
   cur_last_scr_val = 0;
 
-  add_scr_val(STRING, row++, 34, (void *)"Miner State", 0);
+  /* Miner State  ( Mon Mar 19 08:09:18 2018 --- Mon Mar 19 08:09:18 2018 )*/
+  offset = 6;
+  offset = add_scr_val(STRING, row, offset, (void *)"Miner State", 0);
+  offset = add_scr_val(STRING, row, offset, (void *)"  ( ", 0);
+  offset = add_scr_val(DATE, row, offset, NULL, 0);
+  offset = add_scr_val(STRING, row, offset, (void *)" --- ", 0);
+  offset = add_scr_val(DATE, row, offset, NULL, 1);
+  offset = add_scr_val(STRING, row, offset, (void *)" )", 0);
+  row++;
   add_scr_val(R_CHAR, row++, 0, (void *)'-', COLS);
 
   /* System | WIFI: OK | CFG: OK | PID: KO  TARGET: 00  PWM: 28/28 | MQTT: OK */
@@ -817,6 +836,7 @@ void setup_screen() {
 void update_scr() {
   int i, orig_x, orig_y, changed, redraw, val_i;
   float val_f;
+  time_t val_t;
 
   getyx(orig_y, orig_x);
   redraw = SYS_REDRAW_SCR;
@@ -901,6 +921,14 @@ void update_scr() {
           move(scr_val[i].y, scr_val[i].x);
           for (j = 0; j < scr_val[i].val2; j++)
             addch(ch);
+        }
+        break;
+      case DATE:
+        val_t = time(NULL) - (scr_val[i].val2 ? 0 : millis() / 1000);
+        if (val_t != scr_val[i].last.val_t || redraw) {
+          scr_val[i].last.val_t = val_t;
+          str = ctime(&val_t);
+          changed = 1;
         }
         break;
       default:
