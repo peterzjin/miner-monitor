@@ -482,7 +482,7 @@ void update_miners() {
       case CLAYMORE_ETH:
       case CLAYMORE_ZEC:
         {
-          if (miners[i].type == CLAYMORE_ETH)
+          if (miners[i].type == CLAYMORE_ETH || miners[i].type == PHOENIX)
             client.println(
               "{\"id\":0,\"jsonrpc\":\"2.0\",\"method\":\"miner_getstat2\"}");
           else
