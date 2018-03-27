@@ -364,9 +364,11 @@ void update_wifi_status() {
 
 /* The task to get the temperature from sensors */
 void update_temp() {
-  int i;
-
   sensors.requestTemperatures();
+#if 1
+  task_list.after(750, _update_temp);
+#else
+  int i;
   for (i = 0; i < TEMP_SENSOR_NO; i++) {
     temp_val[i] = sensors.getTempCByIndex(i);
     temp_val[i] = temp_val[i] < 0 ? temp_val[i] * -1 : temp_val[i];
@@ -374,6 +376,7 @@ void update_temp() {
   }
   pid_input = temp_val[0] - temp_val[2];
   dlog(String("delta: ") + pid_input + "\r\n");
+#endif
 }
 
 /* The task to get the tacho and pwm values from tachometers */
@@ -654,6 +657,17 @@ void send_mqtt() {
   //dlog(str);
   //dlog(str.length());
   mqtt_client.publish(sys_cfg.mqtt_topic.c_str(), str.c_str());
+}
+
+void _update_temp() {
+  int i;
+  for (i = 0; i < TEMP_SENSOR_NO; i++) {
+    temp_val[i] = sensors.getTempCByIndex(i);
+    temp_val[i] = temp_val[i] < 0 ? temp_val[i] * -1 : temp_val[i];
+    dlog(String(temp_val[i]) + " ");
+  }
+  pid_input = temp_val[0] - temp_val[2];
+  dlog(String("delta: ") + pid_input + "\r\n");
 }
 
 #ifdef USE_SCREEN
