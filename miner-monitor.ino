@@ -305,9 +305,11 @@ void loop() {
       pid_output = 0;
       pwm_pid.SetMode(AUTOMATIC);
       dlog("Start the PWM PID control.\r\n");
-    } else if (s_val == 'r') {
+    } else if (s_val == 'd') {
       bitSet(system_status, SYS_REDRAW_SCR_BIT);
       dlog("Re-Draw the Screen.\r\n");
+    } else if (s_val == 'r') {
+      ESP.restart();
     }
   }
 
