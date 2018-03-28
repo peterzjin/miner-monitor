@@ -155,6 +155,7 @@ void update_scr() { }
 typedef struct {
   String    ssid;
   String    passwd;
+  String    hostname;
   String    mqtt_server;
   uint16_t  mqtt_port;
   String    mqtt_topic;
@@ -229,17 +230,19 @@ void setup() {
 
     f.close();
     dlog(str + "\r\n");
-    sys_cfg.ssid = String(cfg.get<char*>("SSID"));
-    sys_cfg.passwd = String(cfg.get<char*>("PASSWD"));
-    sys_cfg.mqtt_server = String(cfg.get<char*>("MQTT_SERVER"));
-    sys_cfg.mqtt_user = String(cfg.get<char*>("MQTT_USER"));
-    sys_cfg.mqtt_passwd = String(cfg.get<char*>("MQTT_PASSWD"));
+    sys_cfg.ssid = cfg.get<String>("SSID");
+    sys_cfg.passwd = cfg.get<String>("PASSWD");
+    sys_cfg.hostname = cfg.get<String>("HOSTNAME");
+    sys_cfg.mqtt_server = cfg.get<String>("MQTT_SERVER");
+    sys_cfg.mqtt_user = cfg.get<String>("MQTT_USER");
+    sys_cfg.mqtt_passwd = cfg.get<String>("MQTT_PASSWD");
     sys_cfg.mqtt_port = cfg.get<int>("MQTT_PORT");
     sys_cfg.mqtt_port = sys_cfg.mqtt_port == 0 ? 1883 : sys_cfg.mqtt_port;
-    sys_cfg.mqtt_topic = String(cfg.get<char*>("MQTT_TOPIC"));
-    if (!sys_cfg.mqtt_topic.length()) {
+    sys_cfg.mqtt_topic = cfg.get<String>("MQTT_TOPIC");
+    if (!sys_cfg.hostname.length())
+      sys_cfg.hostname = String("esp8266");
+    if (!sys_cfg.mqtt_topic.length())
       sys_cfg.mqtt_topic = String("example");
-    }
 
     if (sys_cfg.ssid.length()) {
       bitSet(system_status, SYS_CFG_LOAD_BIT);
@@ -249,6 +252,8 @@ void setup() {
   }
 
   SPIFFS.end();
+
+  WiFi.hostname(sys_cfg.hostname);
 
   sntp_init();
   sntp_setservername(0, "pool.ntp.org");

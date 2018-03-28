@@ -3,7 +3,9 @@ The sys.cfg should be something like:
 {
 	"SSID"		:	"xxx",
 	"PASSWD"	:	"xxx",
+	"HOSTNAME"	:	"xxx",
 	"MQTT_SERVER"	:	"xxx",
+	"MQTT_PORT"	:	xxx,
 	"MQTT_TOPIC"	:	"xxx",
 	"MQTT_USER"	:	"xxx",
 	"MQTT_PASSWD"	:	"xxx"
