@@ -12,6 +12,7 @@
 #include <WiFiUdp.h>
 */
 #include <ESP8266Ping.h>
+#include <ESP8266WebServer.h>
 
 #include <SPI.h>
 #include <U8g2lib.h>
@@ -61,6 +62,7 @@ void update_temp();
 void update_tacho_pwm();
 void update_disp();
 void update_miners();
+void update_state_json();
 void memory_state();
 void send_mqtt();
 TimerTask tasks[] = {
@@ -69,6 +71,7 @@ TimerTask tasks[] = {
   {-1, 2000, update_tacho_pwm},
   {-1, 2000, update_disp},
   {-1, 9999, update_miners},
+  {-1, 9999, update_state_json},
   {-1, 9999, memory_state},
   {-1, 9999, send_mqtt},
 };
@@ -152,6 +155,7 @@ void setup_screen() { }
 void update_scr() { }
 #endif
 
+String state_json_str;
 typedef struct {
   String    ssid;
   String    passwd;
@@ -184,6 +188,7 @@ double pid_set_point, pid_input, pid_output;
 PID pwm_pid(&pid_input, &pid_output, &pid_set_point, 0.8, 0, 5, DIRECT);
 
 WiFiClient espclient;
+ESP8266WebServer ws(80);
 PubSubClient mqtt_client(espclient);
 float temp_val[TEMP_SENSOR_NO];
 int tacho_pwm_addr[TACHO_PWM_NO] = {TACHO_PWM_ADDR1, TACHO_PWM_ADDR2};
@@ -251,13 +256,16 @@ void setup() {
     }
   }
 
-  SPIFFS.end();
+  //SPIFFS.end();
 
   WiFi.hostname(sys_cfg.hostname);
 
   sntp_init();
   sntp_setservername(0, "pool.ntp.org");
   sntp_set_timezone(8);
+
+  ws.onNotFound(ws_default_handler);
+  ws.on("/get_state", HTTP_GET, ws_get_state);
 }
 
 void loop() {
@@ -360,10 +368,12 @@ void update_wifi_status() {
     }
 
     bitSet(system_status, SYS_WIFI_CONN_BIT);
+    ws.begin();
 
     dlog("WiFi connected\r\n");
   } else {
     bitSet(system_status, SYS_WIFI_CONN_BIT);
+    ws.handleClient();
   }
 }
 
@@ -569,36 +579,10 @@ void update_miners() {
   }
 }
 
-/* The task to track the free heap memory */
-void memory_state() {
-  dlog("ESP.getFreeHeap()=");
-  dlog(String(freeheap = ESP.getFreeHeap()) + "\r\n");
-}
-
-/* The task to send mqtt data to the server */
-void send_mqtt() {
-  DynamicJsonBuffer json_buf;
-  String str;
+/* The task to update the state json string */
+void update_state_json() {
   int i, j, gpus = 0;
-
-  if (!SYS_WIFI_CONNECTED)
-    return;
-
-  if (!mqtt_client.connected()) {
-    if (!mqtt_client.connect(sys_cfg.mqtt_user.c_str(),
-         sys_cfg.mqtt_user.c_str(), sys_cfg.mqtt_passwd.c_str())) {
-      bitClear(system_status, SYS_MQTT_CONN_BIT);
-      dlog(String("Cannot connect to the MQTT Server ")
-                 + sys_cfg.mqtt_server + ':' + sys_cfg.mqtt_port + "\r\n");
-      return;
-    } else {
-      dlog(String("Connected to the MQTT Server ")
-                 + sys_cfg.mqtt_server + ':' + sys_cfg.mqtt_port + "\r\n");
-    }
-  }
-  bitSet(system_status, SYS_MQTT_CONN_BIT);
-  //dlog("MQTT connected.\r\n");
-
+  DynamicJsonBuffer json_buf;
   JsonObject& root = json_buf.createObject();
 
   root["temp_sensors"] = TEMP_SENSOR_NO;
@@ -658,10 +642,39 @@ void send_mqtt() {
   }
   root["gpus"] = gpus;
 
-  root.printTo(str);
+  state_json_str = String();
+  root.printTo(state_json_str);
   //dlog(str);
   //dlog(str.length());
-  mqtt_client.publish(sys_cfg.mqtt_topic.c_str(), str.c_str());
+}
+
+/* The task to track the free heap memory */
+void memory_state() {
+  dlog("ESP.getFreeHeap()=");
+  dlog(String(freeheap = ESP.getFreeHeap()) + "\r\n");
+}
+
+/* The task to send mqtt data to the server */
+void send_mqtt() {
+  if (!SYS_WIFI_CONNECTED)
+    return;
+
+  if (!mqtt_client.connected()) {
+    if (!mqtt_client.connect(sys_cfg.mqtt_user.c_str(),
+         sys_cfg.mqtt_user.c_str(), sys_cfg.mqtt_passwd.c_str())) {
+      bitClear(system_status, SYS_MQTT_CONN_BIT);
+      dlog(String("Cannot connect to the MQTT Server ")
+                 + sys_cfg.mqtt_server + ':' + sys_cfg.mqtt_port + "\r\n");
+      return;
+    } else {
+      dlog(String("Connected to the MQTT Server ")
+                 + sys_cfg.mqtt_server + ':' + sys_cfg.mqtt_port + "\r\n");
+    }
+  }
+  bitSet(system_status, SYS_MQTT_CONN_BIT);
+  //dlog("MQTT connected.\r\n");
+
+  mqtt_client.publish(sys_cfg.mqtt_topic.c_str(), state_json_str.c_str());
 }
 
 void _update_temp() {
@@ -968,6 +981,41 @@ void update_scr() {
   move(orig_y, orig_x);
 }
 #endif
+
+String getContentType(String filename){
+  if(ws.hasArg("download")) return "application/octet-stream";
+  else if(filename.endsWith(".htm")) return "text/html";
+  else if(filename.endsWith(".html")) return "text/html";
+  else if(filename.endsWith(".css")) return "text/css";
+  else if(filename.endsWith(".js")) return "application/javascript";
+  else if(filename.endsWith(".png")) return "image/png";
+  else if(filename.endsWith(".gif")) return "image/gif";
+  else if(filename.endsWith(".jpg")) return "image/jpeg";
+  else if(filename.endsWith(".ico")) return "image/x-icon";
+  else if(filename.endsWith(".xml")) return "text/xml";
+  else if(filename.endsWith(".pdf")) return "application/x-pdf";
+  else if(filename.endsWith(".zip")) return "application/x-zip";
+  else if(filename.endsWith(".gz")) return "application/x-gzip";
+  return "text/plain";
+}
+
+void ws_default_handler() {
+  String path = ws.uri();
+  dlog("Get uri " + path + "\r\n");
+  if(path.endsWith("/")) path += "index.html";
+  String contentType = getContentType(path);
+  if(SPIFFS.exists(path)){
+    File file = SPIFFS.open(path, "r");
+    size_t sent = ws.streamFile(file, contentType);
+    file.close();
+    return;
+  }
+  ws.send(404, "text/plain", "FileNotFound");
+}
+
+void ws_get_state() {
+  ws.send(200, "text/json", state_json_str);
+}
 
 String get_str_int(int *buf, int sz, int offset, int width) {
   String all_str, str;

@@ -1,0 +1,161 @@
+<html>
+<head>
+  <meta http-equiv="Content-type" content="text/html; charset=utf-8">
+  <title>Miner Monitor</title>
+  <link rel="stylesheet" href="miner.css" type="text/css" />
+  <script type="text/javascript" src="http://apps.bdimg.com/libs/jquery/2.1.4/jquery.min.js"></script>
+  <script type="text/javascript">
+    var reloadPeriod = 10000;
+    var running = false;
+    var miner_type = {
+        0: 'PHOENIX',
+        1: 'CM_ETH',
+        2: 'CM_ZEC',
+        3: 'ZM_ZEC'};
+
+    function calc_eff(acp, rej, inc) {
+      var sum_s = acp + rej + inc;
+      if (sum_s == 0)
+        return "N/A";
+      var eff = (100 * acp) / sum_s;
+      return eff.toFixed(2) + "%";
+    }
+
+    function format_timedelta(timedelta) {
+      var sec, min, hour, day, val = "";
+      sec = timedelta % 60;
+      timedelta = Math.floor(timedelta / 60);
+      min = timedelta % 60;
+      timedelta = Math.floor(timedelta / 60);
+      hour = timedelta % 24;
+      day = Math.floor(timedelta / 24);
+      if (day > 0)
+        val = day + "days, "
+      val += (hour < 10 ? "0" + hour : hour) + ":"
+          + (min < 10 ? "0" + min : min) + ":"
+          + (sec < 10 ? "0" + sec : sec);
+      return val;
+    }
+
+    function loadValues(){
+      if(!running) return;
+      var xh = new XMLHttpRequest();
+      xh.onreadystatechange = function(){
+        if (xh.readyState == 4){
+          if(xh.status == 200) {
+            var m_tb = document.createElement('tbody');
+            var res = JSON.parse(xh.responseText);
+            var miners = res.miners;
+            var gpus = res.gpus;
+            var i, j, k, l_gpus = 0;
+            //all_text.innerHTML = xh.responseText;
+            upd_ts.innerHTML = (new Date()).toLocaleString();
+            water_t.innerHTML = res.s_temp[0].toFixed(2);
+            inlet_t.innerHTML = res.s_temp[2].toFixed(2);
+            outlet_t.innerHTML = res.s_temp[1].toFixed(2);
+            pwm.innerHTML = res.pwm[0];
+            if (miners_t.tBodies.length > 1)
+              miners_t.removeChild(miners_t.tBodies[1]);
+            for (i = 0; i < miners; i++) {
+              var m_tr = document.createElement('tr');
+              var m_td = new Array(10);
+              for (j = 0; j < m_td.length; j++)
+                m_td[j] = document.createElement('td');
+              m_td[0].innerHTML = "#" + i;
+              m_td[1].innerHTML = res.m_gpus[i] > 0 ? "ONLINE" : "OFFLINE";
+              m_td[2].innerHTML = res.m_gpus[i];
+              m_td[3].innerHTML = miner_type[res.m_type[i]];
+              m_td[4].innerHTML = res.m_hash[i] + " MH/s";
+              m_td[5].innerHTML = res.m_temp[i].toFixed(2) + " &#176;c";
+              m_td[6].innerHTML = res.m_acp_s[i] + "/" + res.m_rej_s[i] + "/" + res.m_inc_s[i];
+              m_td[7].innerHTML = calc_eff(res.m_acp_s[i], res.m_rej_s[i], res.m_inc_s[i]);
+              m_td[8].innerHTML = format_timedelta(res.m_uptime[i] * 60);
+              m_td[9].innerHTML = format_timedelta(res.m_offtime[i]);
+              for (j = 0; j < m_td.length; j++)
+                m_tr.appendChild(m_td[j]);
+              m_tb.appendChild(m_tr);
+              if (res.m_gpus[i] != 0) {
+                var mg_tr = document.createElement('tr');
+                var mg_td = new Array(3);
+                for (j = 0; j < mg_td.length; j++)
+                  mg_td[j] = document.createElement('td');
+                mg_td[mg_td.length - 1].colSpan = "8";
+                mg_td[mg_td.length - 1].align = "center";
+                var g_t =  document.createElement('table');
+                var g_tr_t =  document.createElement('tr');
+                g_t.className = "flatTable_g";
+                g_tr_t.className = "headingTr";
+                g_tr_t.innerHTML = "<td>GPU</td><td>Rate</td><td>Temp/Fan</td><td>Shares(A/R/I)</td><td>Efficiency</td>";
+                g_t.appendChild(g_tr_t);
+                for (j = l_gpus; j < l_gpus + res.m_gpus[i]; j++) {
+                  var g_tr = document.createElement('tr');
+                  var g_td = new Array(5);
+                  for (k = 0; k < g_td.length; k++)
+                    g_td[k] = document.createElement('td');
+                  g_td[0].innerHTML = "#" + (j - l_gpus);
+                  g_td[1].innerHTML = res.g_hash[j] + " MH/s";
+                  g_td[2].innerHTML = res.g_temp[j].toFixed(2) + " &#176;c / " + res.g_fan[j] + "%";
+                  g_td[3].innerHTML = res.g_acp_s[j] + "/" + res.g_rej_s[j] + "/" + res.g_inc_s[j];
+                  g_td[4].innerHTML = calc_eff(res.g_acp_s[j], res.g_rej_s[j], res.g_inc_s[j]);
+                  for (k = 0; k < g_td.length; k++)
+                    g_tr.appendChild(g_td[k]);
+                  g_t.appendChild(g_tr);
+                }
+                l_gpus += res.m_gpus[i];
+                mg_td[mg_td.length - 1].appendChild(g_t);
+                for (j = 0; j < mg_td.length; j++)
+                  mg_tr.appendChild(mg_td[j]);
+                m_tb.appendChild(mg_tr);
+              }
+	    }
+            miners_t.appendChild(m_tb);
+            if(running) setTimeout(loadValues, reloadPeriod);
+          } else running = false;
+        }
+      };
+      xh.open("GET", "/get_state", true);
+      xh.send(null);
+    };
+
+    function update_now_ts(){
+      now_ts.innerHTML = (new Date()).toLocaleString();
+      setTimeout(update_now_ts, 1000);
+    }
+
+    function run(){
+      if(!running){
+        running = true;
+        loadValues();
+        update_now_ts();
+      }
+    }
+
+    function onBodyLoad(){
+      run();
+    }
+  </script>
+</head>
+<body onload="onBodyLoad()">
+  <p id="all_text"></p>
+  <table id="miners_t" class="flatTable">
+    <tbody>
+    <tr class="titleTr">
+      <td width="100" colspan="6"><img src="mining.png"/></td>
+      <td colspan="4"><p>Water: <b id="water_t"></b> &#176;c | Inlet: <b id="inlet_t"></b> &#176;c | Outlet: <b id="outlet_t"></b> &#176;c | PWM: <b id="pwm"></b></p>Updated at <b id="upd_ts"></b> | Now <b id="now_ts"></b></td>
+    </tr>
+    <tr class="headingTr">
+      <td>Miner</td>
+      <td>Status</td>
+      <td>GPUs</td>
+      <td>Type</td>
+      <td>Rate</td>
+      <td>Temp</td>
+      <td>Shares(A/R/I)</td>
+      <td>Efficiency</td>
+      <td>Uptime</td>
+      <td>Offtime</td>
+    </tr>
+  </tbody>
+  </table>
+</body>
+</html>
