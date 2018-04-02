@@ -1,4 +1,8 @@
 #!/usr/bin/python
+from websocket import create_connection
+from StringIO import StringIO
+from gzip import GzipFile
+import json
 import rrdtool
 import datetime
 
@@ -8,6 +12,14 @@ def miner_type(n):
             1: 'CM_ETH',
             2: 'CM_ZEC',
             3: 'ZM_ZEC',
+        }.get(int(n),'error')
+
+def get_trade_key(n):
+    return {
+            0: 'market.ethusdt.detail',
+            1: 'market.ethusdt.detail',
+            2: 'market.zecusdt.detail',
+            3: 'market.zecusdt.detail',
         }.get(int(n),'error')
 
 def efficiency(acp, rej, inc):
@@ -37,9 +49,19 @@ def sec2time(val):
         t = "0"
     return t
 
+price = {'market.ethusdt.detail': -1, 'market.zecusdt.detail': -1}
+ws = create_connection("wss://api.huobipro.com/ws")
 lastupdate = rrdtool.lastupdate("../miner_state.rrd")
 ds = lastupdate['ds']
 miners = int(ds['miners'])
+query_num = 0
+for i in range(miners):
+    trade_key = get_trade_key(ds['m_type' + str(i)])
+    if trade_key in price.keys() and price[trade_key] == -1:
+        price[trade_key] = 0
+        query_str = '{"req": "' + trade_key + '", "id": "id12"}'
+        ws.send(query_str)
+        query_num += 1
 gpus = int(ds['gpus'])
 lu_date = lastupdate['date']
 now_date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -95,6 +117,13 @@ print '<td>Uptime</td>'
 print '<td>Offtime</td>'
 print '</tr>'
 l_gpus = 0
+for i in range(query_num):
+    res_json = json.loads(GzipFile(fileobj=StringIO(ws.recv())).read().decode('utf-8'))
+    if "rep" in res_json and "data" in res_json and "close" in res_json["data"]:
+        if res_json["rep"] in price:
+            price[res_json["rep"]] = res_json["data"]["close"]
+            #print price[res_json["rep"]]
+ws.close()
 for i in range(miners):
     m_gpus = int(ds['m_gpus' + str(i)])
     print '<tr>'
@@ -104,7 +133,7 @@ for i in range(miners):
     else:
         print '<td>Online</td>'
     print '<td>%d</td>' % m_gpus
-    print '<td>%s</td>' % miner_type(ds['m_type' + str(i)])
+    print '<td>%s(%.2f)</td>' % (miner_type(ds['m_type' + str(i)]), price[get_trade_key(ds['m_type' + str(i)])])
     if ds['m_dhash' + str(i)] > 0:
         print '<td>%.2f MH/s | %.2f MH/s</td>' % (ds['m_hash' + str(i)], ds['m_dhash' + str(i)])
     else:
