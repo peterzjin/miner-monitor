@@ -121,6 +121,7 @@ Miner_s miners_s[MINERS_NUM];
 
 #define USE_SCREEN
 #ifdef USE_SCREEN
+#define SCREEN_LINES 60
 #define dlog scr_log
 enum scr_val_type {
   INT,
@@ -861,14 +862,14 @@ void setup_screen() {
   }
 
   add_scr_val(R_CHAR, row++, 0, (void *)'-', COLS);
-  add_scr_val(R_CHAR, LINES - 2, 0, (void *)'-', COLS);
+  add_scr_val(R_CHAR, SCREEN_LINES - 2, 0, (void *)'-', COLS);
 
-  setscrreg (row, LINES - 3);
-  log_y = LINES - 3;
+  setscrreg (row, SCREEN_LINES - 3);
+  log_y = SCREEN_LINES - 3;
   log_x = 0;
 
-  offset = add_scr_val(STRING, LINES - 1, 0, (void *)"CMD: ", 0);
-  move(LINES - 1, offset);
+  offset = add_scr_val(STRING, SCREEN_LINES - 1, 0, (void *)"CMD: ", 0);
+  move(SCREEN_LINES - 1, offset);
 
   bitSet(system_status, SYS_REDRAW_SCR_BIT);
 }
