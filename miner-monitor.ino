@@ -191,6 +191,8 @@ PID pwm_pid(&pid_input, &pid_output, &pid_set_point, 0.8, 0, 5, DIRECT);
 WiFiClient espclient;
 ESP8266WebServer ws(80);
 PubSubClient mqtt_client(espclient);
+// 0: Water 1: Outlet Air 2: Inlet Air
+byte sensors_map[TEMP_SENSOR_NO] {1, 0, 2};
 float temp_val[TEMP_SENSOR_NO];
 int tacho_pwm_addr[TACHO_PWM_NO] = {TACHO_PWM_ADDR1, TACHO_PWM_ADDR2};
 int pwm_val[TACHO_PWM_NO];
@@ -679,14 +681,15 @@ void send_mqtt() {
 }
 
 void _update_temp() {
-  int i;
+  int i, n;
   for (i = 0; i < TEMP_SENSOR_NO; i++) {
-    temp_val[i] = sensors.getTempCByIndex(i);
-    temp_val[i] = temp_val[i] < 0 ? temp_val[i] * -1 : temp_val[i];
-    dlog(String(temp_val[i]) + " ");
+    n = sensors_map[i];
+    temp_val[n] = sensors.getTempCByIndex(i);
+    temp_val[n] = temp_val[n] < 0 ? temp_val[n] * -1 : temp_val[n];
   }
   pid_input = temp_val[0] - temp_val[2];
-  dlog(String("delta: ") + pid_input + "\r\n");
+  dlog(String("W: ") + temp_val[0] + " O: " + temp_val[1] + " I: " + temp_val[2]
+           + " D: " + (temp_val[0] - temp_val[2]) + "\r\n");
 }
 
 #ifdef USE_SCREEN
