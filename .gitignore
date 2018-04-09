@@ -2,3 +2,5 @@ sys.cfg
 *.png
 *.rrd
 !mining.png
+!reset.png
+!boot.png

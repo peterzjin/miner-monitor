@@ -156,6 +156,9 @@ void setup_screen() { }
 void update_scr() { }
 #endif
 
+#define RESET_PIN 6
+#define BOOT_PIN  7
+
 String state_json_str;
 typedef struct {
   String    ssid;
@@ -178,10 +181,14 @@ unsigned int system_status;
 #define SYS_PWM_PID_BIT     2
 #define SYS_MQTT_CONN_BIT   3
 #define SYS_REDRAW_SCR_BIT  4
+#define SYS_NEED_RESET_BIT  5
+#define SYS_NEED_BOOT_BIT   6
 #define SYS_WIFI_CONNECTED  bitRead(system_status, SYS_WIFI_CONN_BIT)
 #define SYS_CFG_LOADED      bitRead(system_status, SYS_CFG_LOAD_BIT)
 #define SYS_PWM_PID_EN      bitRead(system_status, SYS_PWM_PID_BIT)
 #define SYS_REDRAW_SCR      bitRead(system_status, SYS_REDRAW_SCR_BIT)
+#define SYS_NEED_RESET      bitRead(system_status, SYS_NEED_RESET_BIT)
+#define SYS_NEED_BOOT       bitRead(system_status, SYS_NEED_BOOT_BIT)
 
 #define MAX_PWM_VAL 69
 #define MIN_PWM_VAL 16
@@ -269,6 +276,7 @@ void setup() {
 
   ws.onNotFound(ws_default_handler);
   ws.on("/get_state", HTTP_GET, ws_get_state);
+  ws.on("/action", HTTP_POST, ws_action);
 }
 
 void loop() {
@@ -298,6 +306,15 @@ void loop() {
     dlog(rssi);
   }
   */
+
+  if (SYS_NEED_RESET || SYS_NEED_BOOT) {
+    byte pin = SYS_NEED_RESET ? RESET_PIN : BOOT_PIN;
+    bitClear(system_status, SYS_NEED_RESET_BIT);
+    bitClear(system_status, SYS_NEED_BOOT_BIT);
+    pcf8574.write(pin, LOW);
+    delay(200);
+    pcf8574.write(pin, HIGH);
+  }
 
   task_list.update();
 
@@ -1019,6 +1036,15 @@ void ws_default_handler() {
 
 void ws_get_state() {
   ws.send(200, "text/json", state_json_str);
+}
+
+void ws_action() {
+  String action = ws.arg(0);
+  if (action == "reset")
+    bitSet(system_status, SYS_NEED_RESET_BIT);
+  else if (action == "boot")
+    bitSet(system_status, SYS_NEED_BOOT_BIT);
+  ws.send(200, "text/plain", "");
 }
 
 String get_str_int(int *buf, int sz, int offset, int width) {

@@ -133,6 +133,13 @@
     function onBodyLoad(){
       run();
     }
+
+    function onClick(action){
+      var r = confirm("Are you sure to " + action + " the miner?")
+      if (r == true) {
+        $.post('/action', {'action':action});
+      }
+    }
   </script>
 </head>
 <body onload="onBodyLoad()">
@@ -141,7 +148,8 @@
     <tbody>
     <tr class="titleTr">
       <td width="100" colspan="6"><img src="mining.png"/></td>
-      <td colspan="4"><p>Water: <b id="water_t"></b> &#176;c | Inlet: <b id="inlet_t"></b> &#176;c | Outlet: <b id="outlet_t"></b> &#176;c | PWM: <b id="pwm"></b></p>Updated at <b id="upd_ts"></b> | Now <b id="now_ts"></b></td>
+      <td colspan="3"><p>Water: <b id="water_t"></b> &#176;c | Inlet: <b id="inlet_t"></b> &#176;c | Outlet: <b id="outlet_t"></b> &#176;c | PWM: <b id="pwm"></b></p>Updated at <b id="upd_ts"></b> | Now <b id="now_ts"></b></td>
+      <td width="120"><img src="reset.png" onclick="onClick('reset')" /><img src="boot.png" onclick="onClick('boot')" /></td>
     </tr>
     <tr class="headingTr">
       <td>Miner</td>
