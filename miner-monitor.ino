@@ -78,7 +78,7 @@ TimerTask tasks[] = {
 #define TASKS_NUM (sizeof(tasks) / sizeof(TimerTask))
 Timer task_list;
 
-#define MAX_GPU_PER_MINER 6
+#define MAX_GPU_PER_MINER 9
 enum miner_type {
   PHOENIX,
   CLAYMORE_ETH,
@@ -87,15 +87,11 @@ enum miner_type {
 };
 typedef struct {
   char *ip_host;
-  int  port;
+  uint16_t port;
+  short enabled;
   enum miner_type type;
 } Miner;
-Miner miners[] = {
-  {.ip_host = "peter-m1", .port = 1111, .type = PHOENIX},
-  {.ip_host = "peter-pc", .port = 2222, .type = CLAYMORE_ZEC},
-  {.ip_host = "peter-pc", .port = 4444, .type = ZM_ZEC},
-};
-#define MINERS_NUM (sizeof(miners) / sizeof(Miner))
+Miner *miners;
 #define OFFLINE_TH 30
 typedef struct {
   int gpu_num;
@@ -117,7 +113,8 @@ typedef struct {
   int last_offline;
   int offtime;
 } Miner_s;
-Miner_s miners_s[MINERS_NUM];
+Miner_s *miners_s;
+int miners_num;
 
 #define USE_SCREEN
 #ifdef USE_SCREEN
@@ -211,11 +208,9 @@ int freeheap;
 
 void setup() {
   int i;
+  String cfg_str;
 
   Serial.begin(115200);
-
-  setup_screen();
-  update_scr();
 
   Wire.begin(D3, D2);
   pcf8574.begin();
@@ -223,10 +218,6 @@ void setup() {
   sensors.begin();
   sensors.setWaitForConversion(FALSE);
   u8g2.begin();
-
-  for (i = 0; i < TASKS_NUM; i++) {
-    tasks[i].id = task_list.every(tasks[i].interval, tasks[i].callback);
-  }
 
   pid_set_point = 15;
   pwm_pid.SetMode(MANUAL);
@@ -239,19 +230,19 @@ void setup() {
   if (!f) {
     dlog("System CFG File open failed.\r\n");
   } else {
+    f.setTimeout(1);
     DynamicJsonBuffer json_buf;
-    String str = f.readStringUntil('}') + '}';
-    JsonObject& cfg = json_buf.parseObject(str);
+    cfg_str = f.readString();
+    JsonObject& cfg = json_buf.parseObject(cfg_str);
 
     f.close();
-    dlog(str + "\r\n");
     sys_cfg.ssid = cfg.get<String>("SSID");
     sys_cfg.passwd = cfg.get<String>("PASSWD");
     sys_cfg.hostname = cfg.get<String>("HOSTNAME");
     sys_cfg.mqtt_server = cfg.get<String>("MQTT_SERVER");
     sys_cfg.mqtt_user = cfg.get<String>("MQTT_USER");
     sys_cfg.mqtt_passwd = cfg.get<String>("MQTT_PASSWD");
-    sys_cfg.mqtt_port = cfg.get<int>("MQTT_PORT");
+    sys_cfg.mqtt_port = cfg.get<uint16_t>("MQTT_PORT");
     sys_cfg.mqtt_port = sys_cfg.mqtt_port == 0 ? 1883 : sys_cfg.mqtt_port;
     sys_cfg.mqtt_topic = cfg.get<String>("MQTT_TOPIC");
     if (!sys_cfg.hostname.length())
@@ -264,9 +255,26 @@ void setup() {
       if (sys_cfg.mqtt_server.length())
         mqtt_client.setServer(sys_cfg.mqtt_server.c_str(), sys_cfg.mqtt_port);
     }
+
+    JsonArray& json_miners = cfg["MINERS"];
+    miners_num = json_miners.size();
+    miners = (Miner *)malloc(miners_num * sizeof(Miner));
+    miners_s = (Miner_s *)malloc(miners_num * sizeof(Miner_s));
+    memset(miners, 0, miners_num * sizeof(Miner));
+    memset(miners_s, 0, miners_num * sizeof(Miner_s));
+    for (i = 0; i < miners_num; i++) {
+      JsonObject& json_miner = json_miners[i];
+      miners[i].ip_host = strdup(json_miner.get<const char*>("IP_HOST"));
+      miners[i].port    = json_miner.get<uint16_t>("PORT");
+      miners[i].enabled = json_miner.get<short>("ENABLED");
+      miners[i].type    = (enum miner_type)json_miner.get<int>("TYPE");
+    }
   }
 
-  //SPIFFS.end();
+  setup_screen();
+  update_scr();
+
+  dlog(cfg_str + "\r\n");
 
   WiFi.hostname(sys_cfg.hostname);
 
@@ -277,6 +285,11 @@ void setup() {
   ws.onNotFound(ws_default_handler);
   ws.on("/get_state", HTTP_GET, ws_get_state);
   ws.on("/action", HTTP_POST, ws_action);
+
+  for (i = 0; i < TASKS_NUM; i++) {
+    tasks[i].id = task_list.every(tasks[i].interval, tasks[i].callback);
+    tasks[i].callback();
+  }
 }
 
 void loop() {
@@ -499,7 +512,7 @@ void update_miners() {
   if (!SYS_WIFI_CONNECTED)
     return;
 
-  for (i = 0; i < MINERS_NUM; i++) {
+  for (i = 0; i < miners_num; i++) {
     if (!client.connect(miners[i].ip_host, miners[i].port)) {
       if (!miners_s[i].last_offline)
         miners_s[i].last_offline = (int)(millis() / 1000);
@@ -615,7 +628,7 @@ void update_state_json() {
   for (i = 0; i < TACHO_PWM_NO; i++)
     pwm.add(pwm_val[i]);
 
-  root["miners"] = MINERS_NUM;
+  root["miners"] = miners_num;
   JsonArray& m_gpus = root.createNestedArray("m_gpus");
   JsonArray& m_type = root.createNestedArray("m_type");
   JsonArray& m_temp = root.createNestedArray("m_temp");
@@ -634,7 +647,7 @@ void update_state_json() {
   JsonArray& g_acp_s = root.createNestedArray("g_acp_s");
   JsonArray& g_rej_s = root.createNestedArray("g_rej_s");
   JsonArray& g_inc_s = root.createNestedArray("g_inc_s");
-  for (i = 0; i < MINERS_NUM; i++) {
+  for (i = 0; i < miners_num; i++) {
     m_gpus.add(miners_s[i].gpu_num);
     m_type.add((int)(miners[i].type));
     m_temp.add(miners_s[i].t_temp);
@@ -863,7 +876,7 @@ void setup_screen() {
   }
 
   /* Miner0 | 6 | ONLINE | 170MH/s | 36.33c | 00D23H13M | A/R/I: 3312/1/0 99.00% */
-  for (i = 0; i < MINERS_NUM; i++) {
+  for (i = 0; i < miners_num; i++) {
     sprintf(c_str = strdup(" Miner0 | "), " Miner%d | ", i);
     offset = 0;
     offset = add_scr_val(STRING, row, offset, c_str, 0);

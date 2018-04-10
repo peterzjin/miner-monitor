@@ -8,5 +8,14 @@ The sys.cfg should be something like:
 	"MQTT_PORT"	:	xxx,
 	"MQTT_TOPIC"	:	"xxx",
 	"MQTT_USER"	:	"xxx",
-	"MQTT_PASSWD"	:	"xxx"
+	"MQTT_PASSWD"	:	"xxx",
+	"MINERS"	:	[
+				{
+					"IP_HOST"	:	"xxx",
+					"PORT"		:	xxx,
+					"ENABLED"	:	x,
+					"TYPE"		:	x
+				},
+				...
+				]
 }
