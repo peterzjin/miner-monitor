@@ -13,6 +13,7 @@
 */
 #include <ESP8266Ping.h>
 #include <ESP8266WebServer.h>
+#include <ESPAsyncTCP.h>
 
 #include <SPI.h>
 #include <U8g2lib.h>
@@ -78,6 +79,7 @@ TimerTask tasks[] = {
 #define TASKS_NUM (sizeof(tasks) / sizeof(TimerTask))
 Timer task_list;
 
+#define USE_ASYNC_TCP
 #define MAX_GPU_PER_MINER 9
 enum miner_type {
   PHOENIX,
@@ -90,6 +92,9 @@ typedef struct {
   uint16_t port;
   short enabled;
   enum miner_type type;
+#ifdef USE_ASYNC_TCP
+  AsyncClient *asc;
+#endif
 } Miner;
 Miner *miners;
 #define OFFLINE_TH 30
@@ -438,12 +443,12 @@ void update_tacho_pwm() {
     while (Wire.available()) {
       if (j == TACHO_PINS_NO) {
         pwm_val[i] = Wire.read();
-        dlog(String(pwm_val[i]) + "\r\n");
+        //dlog(String(pwm_val[i]) + "\r\n");
       } else {
         val_l = Wire.read();
         val_h = Wire.read();
         tacho_val[i][j] = ((val_h << 8) + val_l) * RPM_MULTI;
-        dlog(String(tacho_val[i][j]) + " ");
+        //dlog(String(tacho_val[i][j]) + " ");
         j++;
       }
     }
@@ -503,11 +508,65 @@ void update_disp() {
 }
 
 /* The task to get the info from miners */
+#ifdef USE_ASYNC_TCP
+void as_onError(void *arg, AsyncClient *c, int error) {
+  dlog("Error : " + String((uint32_t)c, HEX) + " " + String(error) + " idx: " + String((int)arg) + "\r\n");
+  miners[(int)arg].asc = NULL;
+  delete c;
+}
+void as_onDisconnect(void *arg, AsyncClient *c) {
+  //dlog("DisConnected : " + String((uint32_t)c, HEX) + " idx: " + String((int)arg) + " " + c->state() +"\r\n");
+  miners[(int)arg].asc = NULL;
+  delete c;
+}
+void as_onData(void *arg, AsyncClient *c, void *data, size_t len) {
+  DynamicJsonBuffer json_buf;
+  //dlog("Data : " + String((uint32_t)c, HEX) + " idx: " + String((int)arg) + " " + String(len) +"\r\n");
+  parse_miner_state((int)arg, (char *)data);
+  dump_miner_state((int)arg);
+}
+void as_onConnect(void *arg, AsyncClient *c) {
+  //dlog("Connected : " + String((uint32_t)c, HEX) + " idx: " + String((int)arg) + "\r\n");
+  c->setNoDelay(true);
+  c->onError(NULL, NULL);
+  c->onDisconnect(as_onDisconnect, arg);
+  c->onData(as_onData, arg);
+  //dlog(String(query_miner_state((int)arg)) + "\r\n");
+  c->write(query_miner_state((int)arg));
+}
+void update_miners() {
+  int i;
+
+  if (!SYS_WIFI_CONNECTED)
+    return;
+
+  for (i = 0; i < miners_num; i++) {
+    if (!miners[i].asc) {
+      miners[i].asc = new AsyncClient();
+      if (!miners[i].asc) {
+        dlog("Cannot alloc AsyncClient.\r\n");
+        return;
+      }
+      //dlog("Alloc aClient : " + String((uint32_t)miners[i].asc, HEX) + "\r\n");
+      miners[i].asc->onError(as_onError, (void *)i);
+      miners[i].asc->onConnect(as_onConnect, (void *)i);
+      //dlog(String((uint32_t)miners[i].asc, HEX) + " state " + miners[i].asc->state() + "\r\n");
+      if (!miners[i].asc->connect(miners[i].ip_host, miners[i].port)) {
+        dlog("AsyncClient Connect failed.\r\n");
+        delete miners[i].asc;
+        miners[i].asc = NULL;
+      }
+    } else {
+      if (miners[i].asc->state() == 4)
+        miners[i].asc->write(query_miner_state(i));
+    }
+  }
+}
+#else
 void update_miners() {
   String str;
   WiFiClient client;
-  DynamicJsonBuffer json_buf;
-  int i, j, tmp_array[MAX_GPU_PER_MINER * 2];
+  int i, j;
 
   if (!SYS_WIFI_CONNECTED)
     return;
@@ -530,87 +589,34 @@ void update_miners() {
     }
     miners_s[i].last_offline = 0;
 
+    str = "";
     switch (miners[i].type) {
       case PHOENIX:
       case CLAYMORE_ETH:
-      case CLAYMORE_ZEC:
-        {
-          if (miners[i].type == CLAYMORE_ETH || miners[i].type == PHOENIX)
-            client.println(
+        client.println(
               "{\"id\":0,\"jsonrpc\":\"2.0\",\"method\":\"miner_getstat2\"}");
-          else
-            client.println(
+        break;
+      case CLAYMORE_ZEC:
+        client.println(
               "{\"id\":0,\"jsonrpc\":\"2.0\",\"method\":\"miner_getstat1\"}");
-          str = client.readStringUntil('}') + '}';
-          JsonArray& result = (json_buf.parseObject(str))["result"];
-          miners_s[i].uptime = result[1];
-          str2array(result[2], ';', tmp_array, 3);
-          miners_s[i].t_hash = tmp_array[0];
-          miners_s[i].t_accepted_s = tmp_array[1];
-          miners_s[i].t_rejected_s = tmp_array[2];
-          str2array(result[4], ';', tmp_array, 3);
-          miners_s[i].t_dhash = tmp_array[0];
-          miners_s[i].gpu_num = str2array(result[3], ';',
-              miners_s[i].hash, MAX_GPU_PER_MINER);
-          str2array(result[5], ';', miners_s[i].dhash, MAX_GPU_PER_MINER);
-          str2array(result[6], ';', tmp_array, MAX_GPU_PER_MINER * 2);
-          for (j = 0; j < miners_s[i].gpu_num; j++) {
-            miners_s[i].temp[j] = tmp_array[j * 2];
-            miners_s[i].fan[j] = tmp_array[j * 2 + 1];
-          }
-          str2array(result[8], ';', tmp_array, MAX_GPU_PER_MINER * 2);
-          miners_s[i].t_incorrect_s = tmp_array[0];
-          miners_s[i].pool_switch = tmp_array[1];
-          str2array(result[9], ';', miners_s[i].accepted_s, MAX_GPU_PER_MINER);
-          str2array(result[10], ';', miners_s[i].rejected_s, MAX_GPU_PER_MINER);
-          str2array(result[11], ';', miners_s[i].incorrect_s, MAX_GPU_PER_MINER);
-        }
         break;
       case ZM_ZEC:
-        {
-          client.println("{\"id\":1, \"method\":\"getstat\"}");
-          str = client.readStringUntil('}') + '}';
-          str += client.readStringUntil('}') + '}';
-          //dlog(str);
-          JsonObject& root = json_buf.parseObject(str);
-          miners_s[i].uptime = ((int)root["uptime"]) / 60;
-          JsonArray& result = root["result"];
-          miners_s[i].gpu_num = result.size();
-          miners_s[i].t_hash = 0;
-          miners_s[i].t_accepted_s = 0;
-          miners_s[i].t_rejected_s = 0;
-          for (j = 0; j < miners_s[i].gpu_num; j++) {
-            miners_s[i].temp[j] = result[j]["temperature"];
-            miners_s[i].hash[j] = result[j]["sol_ps"];
-            miners_s[i].t_hash += miners_s[i].hash[j];
-            miners_s[i].accepted_s[j] = result[j]["accepted_shares"];
-            miners_s[i].t_accepted_s += miners_s[i].accepted_s[j];
-            miners_s[i].rejected_s[j] = result[j]["rejected_shares"];
-            miners_s[i].t_rejected_s += miners_s[i].rejected_s[j];
-          }
-        }
+        client.println("{\"id\":1, \"method\":\"getstat\"}");
+        str = client.readStringUntil('}') + '}';
         break;
       default:
         break;
     }
-    miners_s[i].t_temp = average(miners_s[i].temp, miners_s[i].gpu_num);
+    str += client.readStringUntil('}') + '}';
+    parse_miner_state(i, (char *)str.c_str());
 
     client.flush();
     client.stop();
 
-    str = String(miners[i].ip_host) + ": " + miners_s[i].uptime / 60 + "H"
-          + miners_s[i].uptime % 60 + "M "+ miners_s[i].gpu_num + " GPUS "
-          + miners_s[i].t_hash + " Mh/s (" + miners_s[i].t_accepted_s + " "
-          + miners_s[i].t_rejected_s + " " + miners_s[i].t_incorrect_s + ")";
-    dlog(str + "\r\n");
-    for (j = 0; j < miners_s[i].gpu_num; j++) {
-      str = String("  ") + j + ": " + miners_s[i].hash[j] + " Mh/s "
-            + miners_s[i].temp[j] + "C (" + miners_s[i].accepted_s[j] + " "
-            + miners_s[i].rejected_s[j] + " " + miners_s[i].incorrect_s[j] + ")";
-    dlog(str + "\r\n");
-    }
+    dump_miner_state(i);
   }
 }
+#endif
 
 /* The task to update the state json string */
 void update_state_json() {
@@ -801,6 +807,96 @@ byte add_scr_val(enum scr_val_type type, byte y, byte x, void* val1, int val2) {
   }
 
   return x;
+}
+
+char* query_miner_state(int i) {
+  switch (miners[i].type) {
+    case PHOENIX:
+    case CLAYMORE_ETH:
+      return "{\"id\":0,\"jsonrpc\":\"2.0\",\"method\":\"miner_getstat2\"}\r\n";
+    case CLAYMORE_ZEC:
+      return "{\"id\":0,\"jsonrpc\":\"2.0\",\"method\":\"miner_getstat1\"}\r\n";
+    case ZM_ZEC:
+      return "{\"id\":1, \"method\":\"getstat\"}\r\n";
+    default:
+      return NULL;
+  }
+}
+
+void dump_miner_state(int i) {
+  String str;
+  int j;
+
+  str = String(miners[i].ip_host) + ": " + miners_s[i].uptime / 60 + "H"
+        + miners_s[i].uptime % 60 + "M "+ miners_s[i].gpu_num + " GPUS "
+        + miners_s[i].t_hash + " Mh/s (" + miners_s[i].t_accepted_s + " "
+        + miners_s[i].t_rejected_s + " " + miners_s[i].t_incorrect_s + ")";
+  dlog(str + "\r\n");
+  for (j = 0; j < miners_s[i].gpu_num; j++) {
+    str = String("  ") + j + ": " + miners_s[i].hash[j] + " Mh/s "
+          + miners_s[i].temp[j] + "C (" + miners_s[i].accepted_s[j] + " "
+          + miners_s[i].rejected_s[j] + " " + miners_s[i].incorrect_s[j] + ")";
+    dlog(str + "\r\n");
+  }
+}
+
+void parse_miner_state(int i, char *str) {
+  DynamicJsonBuffer json_buf;
+  int j, tmp_array[MAX_GPU_PER_MINER * 2];
+
+  switch (miners[i].type) {
+    case PHOENIX:
+    case CLAYMORE_ETH:
+    case CLAYMORE_ZEC:
+      {
+        JsonArray& result = (json_buf.parseObject(str))["result"];
+        miners_s[i].uptime = result[1];
+        str2array(result[2], ';', tmp_array, 3);
+        miners_s[i].t_hash = tmp_array[0];
+        miners_s[i].t_accepted_s = tmp_array[1];
+        miners_s[i].t_rejected_s = tmp_array[2];
+        str2array(result[4], ';', tmp_array, 3);
+        miners_s[i].t_dhash = tmp_array[0];
+        miners_s[i].gpu_num = str2array(result[3], ';',
+            miners_s[i].hash, MAX_GPU_PER_MINER);
+        str2array(result[5], ';', miners_s[i].dhash, MAX_GPU_PER_MINER);
+        str2array(result[6], ';', tmp_array, MAX_GPU_PER_MINER * 2);
+        for (j = 0; j < miners_s[i].gpu_num; j++) {
+          miners_s[i].temp[j] = tmp_array[j * 2];
+          miners_s[i].fan[j] = tmp_array[j * 2 + 1];
+        }
+        str2array(result[8], ';', tmp_array, MAX_GPU_PER_MINER * 2);
+        miners_s[i].t_incorrect_s = tmp_array[0];
+        miners_s[i].pool_switch = tmp_array[1];
+        str2array(result[9], ';', miners_s[i].accepted_s, MAX_GPU_PER_MINER);
+        str2array(result[10], ';', miners_s[i].rejected_s, MAX_GPU_PER_MINER);
+        str2array(result[11], ';', miners_s[i].incorrect_s, MAX_GPU_PER_MINER);
+      }
+      break;
+    case ZM_ZEC:
+      {
+        JsonObject& root = json_buf.parseObject(str);
+        miners_s[i].uptime = ((int)root["uptime"]) / 60;
+        JsonArray& result = root["result"];
+        miners_s[i].gpu_num = result.size();
+        miners_s[i].t_hash = 0;
+        miners_s[i].t_accepted_s = 0;
+        miners_s[i].t_rejected_s = 0;
+        for (j = 0; j < miners_s[i].gpu_num; j++) {
+          miners_s[i].temp[j] = result[j]["temperature"];
+          miners_s[i].hash[j] = result[j]["sol_ps"];
+          miners_s[i].t_hash += miners_s[i].hash[j];
+          miners_s[i].accepted_s[j] = result[j]["accepted_shares"];
+          miners_s[i].t_accepted_s += miners_s[i].accepted_s[j];
+          miners_s[i].rejected_s[j] = result[j]["rejected_shares"];
+          miners_s[i].t_rejected_s += miners_s[i].rejected_s[j];
+        }
+      }
+      break;
+    default:
+      break;
+  }
+  miners_s[i].t_temp = average(miners_s[i].temp, miners_s[i].gpu_num);
 }
 
 /*
