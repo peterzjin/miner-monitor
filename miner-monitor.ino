@@ -541,6 +541,8 @@ void update_miners() {
     return;
 
   for (i = 0; i < miners_num; i++) {
+    if (!miners[i].enabled)
+      continue;
     if (!miners[i].asc) {
       miners[i].asc = new AsyncClient();
       if (!miners[i].asc) {
@@ -572,6 +574,8 @@ void update_miners() {
     return;
 
   for (i = 0; i < miners_num; i++) {
+    if (!miners[i].enabled)
+      continue;
     if (!client.connect(miners[i].ip_host, miners[i].port)) {
       if (!miners_s[i].last_offline)
         miners_s[i].last_offline = (int)(millis() / 1000);
