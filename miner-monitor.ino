@@ -149,7 +149,7 @@ typedef struct {
     time_t val_t;
   } last;
 } Scr_val;
-#define MAX_SCR_VAL 120
+#define MAX_SCR_VAL 128
 int cur_last_scr_val, log_y, log_x;
 Scr_val scr_val[MAX_SCR_VAL];
 #else
@@ -773,6 +773,9 @@ void scr_log(String str) {
 }
 
 byte add_scr_val(enum scr_val_type type, byte y, byte x, void* val1, int val2) {
+  if (cur_last_scr_val >= MAX_SCR_VAL)
+    return x;
+
   scr_val[cur_last_scr_val].type       = type;
   scr_val[cur_last_scr_val].y          = y;
   scr_val[cur_last_scr_val].x          = x;
