@@ -9,7 +9,11 @@ def on_connect(client, userdata, flags, rc):
     client.subscribe(mqtt_topic)
 
 def on_message(client, userdata, msg):
-    print(msg.topic+" "+str(msg.payload))
+    try:
+        print(msg.topic+" "+str(msg.payload))
+    except UnicodeDecodeError, err:
+        print err
+        return
     jmsg = json.loads(msg.payload)
     sensors = jmsg["temp_sensors"]
     miners = jmsg["miners"]
