@@ -510,9 +510,21 @@ void update_disp() {
 /* The task to get the info from miners */
 #ifdef USE_ASYNC_TCP
 void as_onError(void *arg, AsyncClient *c, int error) {
-  dlog("Error : " + String((uint32_t)c, HEX) + " " + String(error) + " idx: " + String((int)arg) + "\r\n");
-  miners[(int)arg].asc = NULL;
+  int i = (int)arg;
+  dlog("Error : " + String((uint32_t)c, HEX) + " " + String(error) + " idx: " + String(i) + "\r\n");
+  miners[i].asc = NULL;
   delete c;
+  if (!miners_s[i].last_offline)
+    miners_s[i].last_offline = (int)(millis() / 1000);
+  miners_s[i].offtime = (int)(millis() / 1000 - miners_s[i].last_offline);
+  if (miners_s[i].offtime > OFFLINE_TH && miners_s[i].gpu_num != 0) {
+    int offtime = miners_s[i].offtime;
+    int last_offline = miners_s[i].last_offline;
+    memset(&(miners_s[i]), 0, sizeof(Miner_s));
+    miners_s[i].offtime = offtime;
+    miners_s[i].last_offline = last_offline;
+    dlog(String(miners[i].ip_host) + ":" + miners[i].port + " offline\r\n");
+  }
 }
 void as_onDisconnect(void *arg, AsyncClient *c) {
   //dlog("DisConnected : " + String((uint32_t)c, HEX) + " idx: " + String((int)arg) + " " + c->state() +"\r\n");
