@@ -874,6 +874,7 @@ void dump_miner_state(int i) {
 
   str = String(miners[i].ip_host) + ": " + miners_s[i].uptime / 60 + "H"
         + miners_s[i].uptime % 60 + "M "+ miners_s[i].gpu_num + " GPUS "
+        + average(miners_s[i].temp, miners_s[i].gpu_num) + " C "
         + miners_s[i].t_hash + " Mh/s (" + miners_s[i].t_accepted_s + " "
         + miners_s[i].t_rejected_s + " " + miners_s[i].t_incorrect_s + ")";
   dlog(str + "\r\n");
