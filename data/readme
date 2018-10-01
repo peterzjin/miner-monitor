@@ -9,6 +9,8 @@ The sys.cfg should be something like:
 	"MQTT_TOPIC"	:	"xxx",
 	"MQTT_USER"	:	"xxx",
 	"MQTT_PASSWD"	:	"xxx",
+	"SENSORS_MAP"   :       [x, y],
+	"TTP_ADDR"      :       [x, y],
 	"MINERS"	:	[
 				{
 					"IP_HOST"	:	"xxx",

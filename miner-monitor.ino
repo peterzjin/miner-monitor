@@ -32,11 +32,7 @@
 #include "FS.h"
 
 #define ONE_WIRE_BUS D1
-#define TACHO_PWM_ADDR1 8
-#define TACHO_PWM_ADDR2 9
-#define TACHO_PWM_NO 2
-#define TACHO_PINS_NO 11
-#define TEMP_SENSOR_NO 3
+#define TTP_PINS 11
 #define RPM_MULTI 15
 
 #define TEMP_FONT u8g2_font_crox4t_tn
@@ -119,7 +115,6 @@ typedef struct {
   int offtime;
 } Miner_s;
 Miner_s *miners_s;
-int miners_num;
 
 #define USE_SCREEN
 #ifdef USE_SCREEN
@@ -149,7 +144,7 @@ typedef struct {
     time_t val_t;
   } last;
 } Scr_val;
-#define MAX_SCR_VAL 128
+#define MAX_SCR_VAL 160
 int cur_last_scr_val, log_y, log_x;
 Scr_val scr_val[MAX_SCR_VAL];
 #else
@@ -171,12 +166,24 @@ typedef struct {
   String    mqtt_topic;
   String    mqtt_user;
   String    mqtt_passwd;
+  uint8_t   sensors_num;
+  uint8_t   *sensors_map;
+  uint8_t   ttp_num;
+  uint8_t   *ttp_addr;
+  int       miners_num;
 } Sys_cfg;
 Sys_cfg sys_cfg;
 
 #define SYS_CFG_FILE_PATH "/sys.cfg"
 
-unsigned int system_status;
+typedef struct {
+  uint32_t  flags;
+  uint32_t  **rpm;
+  uint32_t  *pwm;
+  float     *temp;
+  int       freeheap;
+} Sys_stat;
+Sys_stat sys_stat;
 
 #define SYS_CFG_LOAD_BIT    0
 #define SYS_WIFI_CONN_BIT   1
@@ -185,12 +192,12 @@ unsigned int system_status;
 #define SYS_REDRAW_SCR_BIT  4
 #define SYS_NEED_RESET_BIT  5
 #define SYS_NEED_BOOT_BIT   6
-#define SYS_WIFI_CONNECTED  bitRead(system_status, SYS_WIFI_CONN_BIT)
-#define SYS_CFG_LOADED      bitRead(system_status, SYS_CFG_LOAD_BIT)
-#define SYS_PWM_PID_EN      bitRead(system_status, SYS_PWM_PID_BIT)
-#define SYS_REDRAW_SCR      bitRead(system_status, SYS_REDRAW_SCR_BIT)
-#define SYS_NEED_RESET      bitRead(system_status, SYS_NEED_RESET_BIT)
-#define SYS_NEED_BOOT       bitRead(system_status, SYS_NEED_BOOT_BIT)
+#define SYS_WIFI_CONNECTED  bitRead(sys_stat.flags, SYS_WIFI_CONN_BIT)
+#define SYS_CFG_LOADED      bitRead(sys_stat.flags, SYS_CFG_LOAD_BIT)
+#define SYS_PWM_PID_EN      bitRead(sys_stat.flags, SYS_PWM_PID_BIT)
+#define SYS_REDRAW_SCR      bitRead(sys_stat.flags, SYS_REDRAW_SCR_BIT)
+#define SYS_NEED_RESET      bitRead(sys_stat.flags, SYS_NEED_RESET_BIT)
+#define SYS_NEED_BOOT       bitRead(sys_stat.flags, SYS_NEED_BOOT_BIT)
 
 #define MAX_PWM_VAL 69
 #define MIN_PWM_VAL 16
@@ -201,15 +208,8 @@ WiFiClient espclient;
 ESP8266WebServer ws(80);
 PubSubClient mqtt_client(espclient);
 // 0: Water 1: Outlet Air 2: Inlet Air
-byte sensors_map[TEMP_SENSOR_NO] {1, 0, 2};
-float temp_val[TEMP_SENSOR_NO];
-int tacho_pwm_addr[TACHO_PWM_NO] = {TACHO_PWM_ADDR1, TACHO_PWM_ADDR2};
-int pwm_val[TACHO_PWM_NO];
-int tacho_val[TACHO_PWM_NO][TACHO_PINS_NO];
 int next_pwm_val = 0;
-bool curr_tacho_pwm = 0;
-int volt, amp;
-int freeheap;
+//bool curr_tacho_pwm = 0;
 
 void setup() {
   int i;
@@ -256,23 +256,50 @@ void setup() {
       sys_cfg.mqtt_topic = String("example");
 
     if (sys_cfg.ssid.length()) {
-      bitSet(system_status, SYS_CFG_LOAD_BIT);
+      bitSet(sys_stat.flags, SYS_CFG_LOAD_BIT);
       if (sys_cfg.mqtt_server.length())
         mqtt_client.setServer(sys_cfg.mqtt_server.c_str(), sys_cfg.mqtt_port);
     }
 
+    JsonArray& json_sm = cfg["SENSORS_MAP"];
+    sys_cfg.sensors_num = json_sm.size();
+    if (sys_cfg.sensors_num > 0) {
+      sys_cfg.sensors_map = (uint8_t *)malloc(sys_cfg.sensors_num * sizeof(uint8_t));
+      sys_stat.temp = (float *)malloc(sys_cfg.sensors_num * sizeof(float));
+      for (i = 0; i < sys_cfg.sensors_num; i++) {
+        sys_cfg.sensors_map[i] = json_sm.get<uint8_t>(i);
+        // invalid mapping, ignore the sensors
+        if (sys_cfg.sensors_map[i] >= sys_cfg.sensors_num)
+          sys_cfg.sensors_num = 0;
+      }
+    }
+
+    JsonArray& json_ta = cfg["TTP_ADDR"];
+    sys_cfg.ttp_num = json_ta.size();
+    if (sys_cfg.ttp_num > 0) {
+      sys_cfg.ttp_addr = (uint8_t *)malloc(sys_cfg.ttp_num * sizeof(uint8_t));
+      sys_stat.rpm = (uint32_t **)malloc(sys_cfg.ttp_num * sizeof(uint32_t *));
+      sys_stat.pwm = (uint32_t *)malloc(sys_cfg.ttp_num * sizeof(uint32_t));
+      for (i = 0; i < sys_cfg.ttp_num; i++) {
+        sys_cfg.ttp_addr[i] = json_ta.get<uint8_t>(i);
+        sys_stat.rpm[i] = (uint32_t *)malloc((TTP_PINS - 1) * sizeof(uint32_t));
+      }
+    }
+
     JsonArray& json_miners = cfg["MINERS"];
-    miners_num = json_miners.size();
-    miners = (Miner *)malloc(miners_num * sizeof(Miner));
-    miners_s = (Miner_s *)malloc(miners_num * sizeof(Miner_s));
-    memset(miners, 0, miners_num * sizeof(Miner));
-    memset(miners_s, 0, miners_num * sizeof(Miner_s));
-    for (i = 0; i < miners_num; i++) {
-      JsonObject& json_miner = json_miners[i];
-      miners[i].ip_host = strdup(json_miner.get<const char*>("IP_HOST"));
-      miners[i].port    = json_miner.get<uint16_t>("PORT");
-      miners[i].enabled = json_miner.get<short>("ENABLED");
-      miners[i].type    = (enum miner_type)json_miner.get<int>("TYPE");
+    sys_cfg.miners_num = json_miners.size();
+    if (sys_cfg.miners_num > 0) {
+      miners = (Miner *)malloc(sys_cfg.miners_num * sizeof(Miner));
+      miners_s = (Miner_s *)malloc(sys_cfg.miners_num * sizeof(Miner_s));
+      memset(miners, 0, sys_cfg.miners_num * sizeof(Miner));
+      memset(miners_s, 0, sys_cfg.miners_num * sizeof(Miner_s));
+      for (i = 0; i < sys_cfg.miners_num; i++) {
+        JsonObject& json_miner = json_miners[i];
+        miners[i].ip_host = strdup(json_miner.get<const char*>("IP_HOST"));
+        miners[i].port    = json_miner.get<uint16_t>("PORT");
+        miners[i].enabled = json_miner.get<short>("ENABLED");
+        miners[i].type    = (enum miner_type)json_miner.get<int>("TYPE");
+      }
     }
   }
 
@@ -327,8 +354,8 @@ void loop() {
 
   if (SYS_NEED_RESET || SYS_NEED_BOOT) {
     byte pin = SYS_NEED_RESET ? RESET_PIN : BOOT_PIN;
-    bitClear(system_status, SYS_NEED_RESET_BIT);
-    bitClear(system_status, SYS_NEED_BOOT_BIT);
+    bitClear(sys_stat.flags, SYS_NEED_RESET_BIT);
+    bitClear(sys_stat.flags, SYS_NEED_BOOT_BIT);
     pcf8574.write(pin, LOW);
     delay(200);
     pcf8574.write(pin, HIGH);
@@ -348,16 +375,16 @@ void loop() {
     } else if (s_val == 13 /* Enter */) {
       need_set_pwm = true;
     } else if (s_val == 's') {
-      bitClear(system_status, SYS_PWM_PID_BIT);
+      bitClear(sys_stat.flags, SYS_PWM_PID_BIT);
       pwm_pid.SetMode(MANUAL);
       dlog("Stop the PWM PID control.\r\n");
     } else if (s_val == 'p') {
-      bitSet(system_status, SYS_PWM_PID_BIT);
+      bitSet(sys_stat.flags, SYS_PWM_PID_BIT);
       pid_output = 0;
       pwm_pid.SetMode(AUTOMATIC);
       dlog("Start the PWM PID control.\r\n");
     } else if (s_val == 'd') {
-      bitSet(system_status, SYS_REDRAW_SCR_BIT);
+      bitSet(sys_stat.flags, SYS_REDRAW_SCR_BIT);
       dlog("Re-Draw the Screen.\r\n");
     } else if (s_val == 'r') {
       ESP.restart();
@@ -368,7 +395,7 @@ void loop() {
     if (pwm_pid.Compute()) {
       dlog(String("Current PID input is ") + pid_input
                 + ", PID output is " + pid_output + "\r\n");
-      next_pwm_val = (int)(0.5 + pwm_val[0] - pid_output);
+      next_pwm_val = (int)(0.5 + sys_stat.pwm[0] - pid_output);
       need_set_pwm = true;
     }
   }
@@ -378,14 +405,13 @@ void loop() {
                   (next_pwm_val < MIN_PWM_VAL ? MIN_PWM_VAL : next_pwm_val);
     dlog(String("Get PWM value: ") + next_pwm_val + "\r\n");
 
-    if (next_pwm_val != pwm_val[0]) {
-      Wire.beginTransmission(TACHO_PWM_ADDR1);
-      Wire.write(next_pwm_val);
-      Wire.endTransmission();
-
-      Wire.beginTransmission(TACHO_PWM_ADDR2);
-      Wire.write(next_pwm_val);
-      Wire.endTransmission();
+    if (next_pwm_val != sys_stat.pwm[0]) {
+      int i;
+      for (i = 0; i < sys_cfg.ttp_num; i++) {
+        Wire.beginTransmission(sys_cfg.ttp_addr[i]);
+        Wire.write(next_pwm_val);
+        Wire.endTransmission();
+      }
     }
     next_pwm_val = 0;
   }
@@ -401,16 +427,16 @@ void update_wifi_status() {
     WiFi.begin(sys_cfg.ssid.c_str(), sys_cfg.passwd.c_str());
 
     if (WiFi.waitForConnectResult() != WL_CONNECTED) {
-      bitClear(system_status, SYS_WIFI_CONN_BIT);
+      bitClear(sys_stat.flags, SYS_WIFI_CONN_BIT);
       return;
     }
 
-    bitSet(system_status, SYS_WIFI_CONN_BIT);
+    bitSet(sys_stat.flags, SYS_WIFI_CONN_BIT);
     ws.begin();
 
     dlog("WiFi connected\r\n");
   } else {
-    bitSet(system_status, SYS_WIFI_CONN_BIT);
+    bitSet(sys_stat.flags, SYS_WIFI_CONN_BIT);
     ws.handleClient();
   }
 }
@@ -422,12 +448,12 @@ void update_temp() {
   task_list.after(750, _update_temp);
 #else
   int i;
-  for (i = 0; i < TEMP_SENSOR_NO; i++) {
-    temp_val[i] = sensors.getTempCByIndex(i);
-    temp_val[i] = temp_val[i] < 0 ? temp_val[i] * -1 : temp_val[i];
-    dlog(String(temp_val[i]) + " ");
+  for (i = 0; i < sys_cfg.sensors_num; i++) {
+    sys_stat.temp[i] = sensors.getTempCByIndex(i);
+    sys_stat.temp[i] = sys_stat.temp[i] < 0 ? sys_stat.temp[i] * -1 : sys_stat.temp[i];
+    dlog(String(sys_stat.temp[i]) + " ");
   }
-  pid_input = temp_val[0] - temp_val[2];
+  pid_input = sys_stat.temp[0] - sys_stat.temp[2];
   dlog(String("delta: ") + pid_input + "\r\n");
 #endif
 }
@@ -437,18 +463,18 @@ void update_tacho_pwm() {
   int i, j;
   unsigned char val_h, val_l;
 
-  for (i = 0; i < TACHO_PWM_NO; i++) {
+  for (i = 0; i < sys_cfg.ttp_num; i++) {
     j = 0;
-    Wire.requestFrom(tacho_pwm_addr[i], TACHO_PINS_NO * 2 + 1);
+    Wire.requestFrom(sys_cfg.ttp_addr[i], (uint8_t)(TTP_PINS * 2 + 1));
     while (Wire.available()) {
-      if (j == TACHO_PINS_NO) {
-        pwm_val[i] = Wire.read();
-        //dlog(String(pwm_val[i]) + "\r\n");
+      if (j == TTP_PINS) {
+        sys_stat.pwm[i] = Wire.read();
+        //dlog(String(sys_stat.pwm[i]) + "\r\n");
       } else {
         val_l = Wire.read();
         val_h = Wire.read();
-        tacho_val[i][j] = ((val_h << 8) + val_l) * RPM_MULTI;
-        //dlog(String(tacho_val[i][j]) + " ");
+        sys_stat.rpm[i][j] = ((val_h << 8) + val_l) * RPM_MULTI;
+        //dlog(String(sys_stat.rpm[i][j]) + " ");
         j++;
       }
     }
@@ -462,11 +488,11 @@ void update_disp() {
   u8g2.firstPage();
   do {
     u8g2.setFont(TEMP_FONT);
-    u8g2.drawStr(0, 13, get_str_float(temp_val, 3, 0, 5).c_str());
+    u8g2.drawStr(0, 13, get_str_float(sys_stat.temp, 3, 0, 5).c_str());
     u8g2.setFont(RPM_FONT);
-    u8g2.drawStr(0, 23, get_str_int(tacho_val[curr_tacho_pwm], 5, 0, 4).c_str());
+    u8g2.drawStr(0, 23, get_str_int(sys_stat.rpm[curr_tacho_pwm], 5, 0, 4).c_str());
     u8g2.setFont(RPM_FONT);
-    u8g2.drawStr(0, 32, get_str_int(tacho_val[curr_tacho_pwm], 5, 5, 4).c_str());
+    u8g2.drawStr(0, 32, get_str_int(sys_stat.rpm[curr_tacho_pwm], 5, 5, 4).c_str());
     u8g2.setFont(VOLT_AMP_FONT);
     u8g2.drawStr(114, 23, get_str_int(&volt, 1, 0, 3).c_str());
     u8g2.setFont(VOLT_AMP_FONT);
@@ -475,13 +501,13 @@ void update_disp() {
   #else
   u8g2.clearBuffer();
   u8g2.setFont(TEMP_FONT);
-  u8g2.drawStr(0, 13, get_str_float(temp_val, 3, 0, 5).c_str());
+  u8g2.drawStr(0, 13, get_str_float(sys_stat.temp, 3, 0, 5).c_str());
   u8g2.setFont(MINER_FONT);
   str = String(miners_s[0].t_hash / 1000) + "m "
         + miners_s[0].t_dhash / 1000 + "m "
         + (int)miners_s[0].t_temp + "c "
         + (miners_s[0].gpu_num ? miners_s[0].uptime : miners_s[0].offtime) / 60
-        + "h " + freeheap;
+        + "h " + sys_stat.freeheap;
   u8g2.drawStr(0, 23, str.c_str());
   str = String(miners_s[1].t_hash) + "m "
         + (int)miners_s[1].t_temp + "c "
@@ -493,9 +519,9 @@ void update_disp() {
   u8g2.drawStr(0, 32, str.c_str());
   /*
   u8g2.setFont(RPM_FONT);
-  u8g2.drawStr(0, 23, get_str_int(tacho_val[curr_tacho_pwm], 5, 0, 4).c_str());
+  u8g2.drawStr(0, 23, get_str_int(sys_stat.rpm[curr_tacho_pwm], 5, 0, 4).c_str());
   u8g2.setFont(RPM_FONT);
-  u8g2.drawStr(0, 32, get_str_int(tacho_val[curr_tacho_pwm], 5, 5, 4).c_str());
+  u8g2.drawStr(0, 32, get_str_int(sys_stat.rpm[curr_tacho_pwm], 5, 5, 4).c_str());
   u8g2.setFont(VOLT_AMP_FONT);
   u8g2.drawStr(114, 23, get_str_int(&volt, 1, 0, 3).c_str());
   u8g2.setFont(VOLT_AMP_FONT);
@@ -552,7 +578,7 @@ void update_miners() {
   if (!SYS_WIFI_CONNECTED)
     return;
 
-  for (i = 0; i < miners_num; i++) {
+  for (i = 0; i < sys_cfg.miners_num; i++) {
     if (!miners[i].enabled)
       continue;
     if (!miners[i].asc) {
@@ -585,7 +611,7 @@ void update_miners() {
   if (!SYS_WIFI_CONNECTED)
     return;
 
-  for (i = 0; i < miners_num; i++) {
+  for (i = 0; i < sys_cfg.miners_num; i++) {
     if (!miners[i].enabled)
       continue;
     if (!client.connect(miners[i].ip_host, miners[i].port)) {
@@ -640,17 +666,17 @@ void update_state_json() {
   DynamicJsonBuffer json_buf;
   JsonObject& root = json_buf.createObject();
 
-  root["temp_sensors"] = TEMP_SENSOR_NO;
+  root["temp_sensors"] = sys_cfg.sensors_num;
   JsonArray& s_temp = root.createNestedArray("s_temp");
-  for (i = 0; i < TEMP_SENSOR_NO; i++)
-    s_temp.add(temp_val[i]);
+  for (i = 0; i < sys_cfg.sensors_num; i++)
+    s_temp.add(sys_stat.temp[i]);
 
-  root["pwms"] = TACHO_PWM_NO;
+  root["pwms"] = sys_cfg.ttp_num;
   JsonArray& pwm = root.createNestedArray("pwm");
-  for (i = 0; i < TACHO_PWM_NO; i++)
-    pwm.add(pwm_val[i]);
+  for (i = 0; i < sys_cfg.ttp_num; i++)
+    pwm.add(sys_stat.pwm[i]);
 
-  root["miners"] = miners_num;
+  root["miners"] = sys_cfg.miners_num;
   JsonArray& m_gpus = root.createNestedArray("m_gpus");
   JsonArray& m_type = root.createNestedArray("m_type");
   JsonArray& m_temp = root.createNestedArray("m_temp");
@@ -669,7 +695,7 @@ void update_state_json() {
   JsonArray& g_acp_s = root.createNestedArray("g_acp_s");
   JsonArray& g_rej_s = root.createNestedArray("g_rej_s");
   JsonArray& g_inc_s = root.createNestedArray("g_inc_s");
-  for (i = 0; i < miners_num; i++) {
+  for (i = 0; i < sys_cfg.miners_num; i++) {
     m_gpus.add(miners_s[i].gpu_num);
     m_type.add((int)(miners[i].type));
     m_temp.add(miners_s[i].t_temp);
@@ -706,7 +732,7 @@ void update_state_json() {
 /* The task to track the free heap memory */
 void memory_state() {
   dlog("ESP.getFreeHeap()=");
-  dlog(String(freeheap = ESP.getFreeHeap()) + "\r\n");
+  dlog(String(sys_stat.freeheap = ESP.getFreeHeap()) + "\r\n");
 }
 
 /* The task to send mqtt data to the server */
@@ -717,7 +743,7 @@ void send_mqtt() {
   if (!mqtt_client.connected()) {
     if (!mqtt_client.connect(sys_cfg.mqtt_user.c_str(),
          sys_cfg.mqtt_user.c_str(), sys_cfg.mqtt_passwd.c_str())) {
-      bitClear(system_status, SYS_MQTT_CONN_BIT);
+      bitClear(sys_stat.flags, SYS_MQTT_CONN_BIT);
       dlog(String("Cannot connect to the MQTT Server ")
                  + sys_cfg.mqtt_server + ':' + sys_cfg.mqtt_port + "\r\n");
       return;
@@ -726,7 +752,7 @@ void send_mqtt() {
                  + sys_cfg.mqtt_server + ':' + sys_cfg.mqtt_port + "\r\n");
     }
   }
-  bitSet(system_status, SYS_MQTT_CONN_BIT);
+  bitSet(sys_stat.flags, SYS_MQTT_CONN_BIT);
   //dlog("MQTT connected.\r\n");
 
   mqtt_client.publish(sys_cfg.mqtt_topic.c_str(), state_json_str.c_str());
@@ -734,14 +760,14 @@ void send_mqtt() {
 
 void _update_temp() {
   int i, n;
-  for (i = 0; i < TEMP_SENSOR_NO; i++) {
-    n = sensors_map[i];
-    temp_val[n] = sensors.getTempCByIndex(i);
-    temp_val[n] = temp_val[n] < 0 ? temp_val[n] * -1 : temp_val[n];
+  for (i = 0; i < sys_cfg.sensors_num; i++) {
+    n = sys_cfg.sensors_map[i];
+    sys_stat.temp[n] = sensors.getTempCByIndex(i);
+    sys_stat.temp[n] = sys_stat.temp[n] < 0 ? sys_stat.temp[n] * -1 : sys_stat.temp[n];
   }
-  pid_input = temp_val[0] - temp_val[2];
-  dlog(String("W: ") + temp_val[0] + " O: " + temp_val[1] + " I: " + temp_val[2]
-           + " D: " + (temp_val[0] - temp_val[2]) + "\r\n");
+  pid_input = sys_stat.temp[0] - sys_stat.temp[2];
+  dlog(String("W: ") + sys_stat.temp[0] + " O: " + sys_stat.temp[1] + " I: " + sys_stat.temp[2]
+           + " D: " + (sys_stat.temp[0] - sys_stat.temp[2]) + "\r\n");
 }
 
 #ifdef USE_SCREEN
@@ -953,45 +979,45 @@ void setup_screen() {
   /* System | WIFI: OK | CFG: OK | PID: KO  TARGET: 00  PWM: 28/28 | MQTT: OK */
   offset = 0;
   offset = add_scr_val(STRING, row, offset, (void *)" System | WIFI: ", 0);
-  offset = add_scr_val(OK_KO, row, offset, &system_status, SYS_WIFI_CONN_BIT);
+  offset = add_scr_val(OK_KO, row, offset, &sys_stat.flags, SYS_WIFI_CONN_BIT);
   offset = add_scr_val(STRING, row, offset, (void *)" | CFG: ", 0);
-  offset = add_scr_val(OK_KO, row, offset, &system_status, SYS_CFG_LOAD_BIT);
+  offset = add_scr_val(OK_KO, row, offset, &sys_stat.flags, SYS_CFG_LOAD_BIT);
   offset = add_scr_val(STRING, row, offset, (void *)" | PID: ", 0);
-  offset = add_scr_val(OK_KO, row, offset, &system_status, SYS_PWM_PID_BIT);
+  offset = add_scr_val(OK_KO, row, offset, &sys_stat.flags, SYS_PWM_PID_BIT);
   offset = add_scr_val(STRING, row, offset, (void *)"  TARGET: ", 0);
   offset = add_scr_val(INT, row, offset, &pid_set_point, 2);
   offset = add_scr_val(STRING, row, offset, (void *)"  PWM: ", 0);
-  offset = add_scr_val(INT, row, offset, &pwm_val[0], 2);
+  offset = add_scr_val(INT, row, offset, &sys_stat.pwm[0], 2);
   offset = add_scr_val(R_CHAR, row, offset, (void *)'/', 1);
-  offset = add_scr_val(INT, row, offset, &pwm_val[1], 2);
+  offset = add_scr_val(INT, row, offset, &sys_stat.pwm[1], 2);
   offset = add_scr_val(STRING, row, offset, (void *)" | MQTT: ", 0);
-  add_scr_val(OK_KO, row++, offset, &system_status, SYS_MQTT_CONN_BIT);
+  add_scr_val(OK_KO, row++, offset, &sys_stat.flags, SYS_MQTT_CONN_BIT);
 
   /* Sensor | Inlet: 18.37c | Water: 31.31c | Outlet: 31.56c | Delta: 12.94c */
   offset = 0;
   offset = add_scr_val(STRING, row, offset, (void *)" Sensor | Inlet: ", 0);
-  offset = add_scr_val(FLOAT, row, offset, &temp_val[2], 5);
+  offset = add_scr_val(FLOAT, row, offset, &sys_stat.temp[2], 5);
   offset = add_scr_val(STRING, row, offset, (void *)"c | Water: ", 0);
-  offset = add_scr_val(FLOAT, row, offset, &temp_val[0], 5);
+  offset = add_scr_val(FLOAT, row, offset, &sys_stat.temp[0], 5);
   offset = add_scr_val(STRING, row, offset, (void *)"c | Outlet: ", 0);
-  offset = add_scr_val(FLOAT, row, offset, &temp_val[1], 5);
+  offset = add_scr_val(FLOAT, row, offset, &sys_stat.temp[1], 5);
   offset = add_scr_val(STRING, row, offset, (void *)"c | Delta: ", 0);
-  add_scr_val(FLOAT_DELTA, row++, offset, &temp_val[0], 5);
+  add_scr_val(FLOAT_DELTA, row++, offset, &sys_stat.temp[0], 5);
 
   /* Fan0   | 4095 | 4125 | 3855 | 5970 | 5820 | 5775 | 5835 | 1065 | 5745 | 0000 */
-  for (i = 0; i < TACHO_PWM_NO; i++) {
+  for (i = 0; i < sys_cfg.ttp_num; i++) {
     sprintf(c_str = strdup(" Fan0  "), " Fan%d  ", i);
     offset = 0;
     offset = add_scr_val(STRING, row, offset, c_str, 0);
-    for (j = 0; j < 10; j++, col += 7) {
+    for (j = 0; j < TTP_PINS - 1; j++, col += 7) {
       offset = add_scr_val(STRING, row, offset, (void *)" | ", 0);
-      offset = add_scr_val(INT, row, offset, &tacho_val[i][j], 4);
+      offset = add_scr_val(INT, row, offset, &sys_stat.rpm[i][j], 4);
     }
     row++;
   }
 
   /* Miner0 | 6 | ONLINE | 170MH/s | 36.33c | 00D23H13M | A/R/I: 3312/1/0 99.00% */
-  for (i = 0; i < miners_num; i++) {
+  for (i = 0; i < sys_cfg.miners_num; i++) {
     sprintf(c_str = strdup(" Miner0 | "), " Miner%d | ", i);
     offset = 0;
     offset = add_scr_val(STRING, row, offset, c_str, 0);
@@ -1019,7 +1045,7 @@ void setup_screen() {
   offset = add_scr_val(STRING, SCREEN_LINES - 1, 0, (void *)"CMD: ", 0);
   move(SCREEN_LINES - 1, offset);
 
-  bitSet(system_status, SYS_REDRAW_SCR_BIT);
+  bitSet(sys_stat.flags, SYS_REDRAW_SCR_BIT);
 }
 
 void update_scr() {
@@ -1029,7 +1055,7 @@ void update_scr() {
 
   getyx(orig_y, orig_x);
   redraw = SYS_REDRAW_SCR;
-  bitClear(system_status, SYS_REDRAW_SCR_BIT);
+  bitClear(sys_stat.flags, SYS_REDRAW_SCR_BIT);
   for (i = 0; i < cur_last_scr_val; i++) {
     String str;
     changed = 0;
@@ -1169,9 +1195,9 @@ void ws_get_state() {
 void ws_action() {
   String action = ws.arg(0);
   if (action == "reset")
-    bitSet(system_status, SYS_NEED_RESET_BIT);
+    bitSet(sys_stat.flags, SYS_NEED_RESET_BIT);
   else if (action == "boot")
-    bitSet(system_status, SYS_NEED_BOOT_BIT);
+    bitSet(sys_stat.flags, SYS_NEED_BOOT_BIT);
   ws.send(200, "text/plain", "");
 }
 
