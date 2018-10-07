@@ -19,6 +19,8 @@ rrdtool create miner_state.rrd --step 10s	\
 	DS:s_temp3:GAUGE:20:1:100		\
 	DS:pwm0:GAUGE:20:1:100			\
 	DS:pwm1:GAUGE:20:1:100			\
+	DS:pwm2:GAUGE:20:1:100			\
+	DS:pwm3:GAUGE:20:1:100			\
 	DS:m_gpus0:GAUGE:20:1:10		\
 	DS:m_gpus1:GAUGE:20:1:10		\
 	DS:m_gpus2:GAUGE:20:1:10		\
