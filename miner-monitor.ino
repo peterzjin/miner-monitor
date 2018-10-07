@@ -484,6 +484,7 @@ void update_tacho_pwm() {
 /* The task to draw the display */
 void update_disp() {
   String str;
+  int i;
   #if 0
   u8g2.firstPage();
   do {
@@ -509,13 +510,12 @@ void update_disp() {
         + (miners_s[0].gpu_num ? miners_s[0].uptime : miners_s[0].offtime) / 60
         + "h " + sys_stat.freeheap;
   u8g2.drawStr(0, 23, str.c_str());
-  str = String(miners_s[1].t_hash) + "m "
-        + (int)miners_s[1].t_temp + "c "
-        + (miners_s[1].gpu_num ? miners_s[1].uptime : miners_s[1].offtime) / 60
-        + "h " + miners_s[2].t_hash + "m "
-        + (int)miners_s[2].t_temp + "c "
-        + (miners_s[2].gpu_num ? miners_s[2].uptime : miners_s[2].offtime) / 60
-        + "h";
+  str = String();
+  for (i = 1; i < sys_cfg.miners_num; i++)
+    if (miners[i].enabled)
+      str += String(miners_s[i].t_hash) + "m " + (int)miners_s[i].t_temp + "c "
+          + (miners_s[i].gpu_num ? miners_s[i].uptime : miners_s[i].offtime) / 60
+          + "h ";
   u8g2.drawStr(0, 32, str.c_str());
   /*
   u8g2.setFont(RPM_FONT);
