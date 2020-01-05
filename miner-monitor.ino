@@ -214,6 +214,7 @@ int next_pwm_val = 0;
 void setup() {
   int i;
   String cfg_str;
+  DynamicJsonDocument cfg(2048);
 
   Serial.begin(115200);
 
@@ -236,20 +237,19 @@ void setup() {
     dlog("System CFG File open failed.\r\n");
   } else {
     f.setTimeout(1);
-    DynamicJsonBuffer json_buf;
     cfg_str = f.readString();
-    JsonObject& cfg = json_buf.parseObject(cfg_str);
+    deserializeJson(cfg, cfg_str);
 
     f.close();
-    sys_cfg.ssid = cfg.get<String>("SSID");
-    sys_cfg.passwd = cfg.get<String>("PASSWD");
-    sys_cfg.hostname = cfg.get<String>("HOSTNAME");
-    sys_cfg.mqtt_server = cfg.get<String>("MQTT_SERVER");
-    sys_cfg.mqtt_user = cfg.get<String>("MQTT_USER");
-    sys_cfg.mqtt_passwd = cfg.get<String>("MQTT_PASSWD");
-    sys_cfg.mqtt_port = cfg.get<uint16_t>("MQTT_PORT");
+    sys_cfg.ssid = cfg["SSID"].as<String>();
+    sys_cfg.passwd = cfg["PASSWD"].as<String>();
+    sys_cfg.hostname = cfg["HOSTNAME"].as<String>();
+    sys_cfg.mqtt_server = cfg["MQTT_SERVER"].as<String>();
+    sys_cfg.mqtt_user = cfg["MQTT_USER"].as<String>();
+    sys_cfg.mqtt_passwd = cfg["MQTT_PASSWD"].as<String>();
+    sys_cfg.mqtt_port = cfg["MQTT_PORT"].as<uint16_t>();
     sys_cfg.mqtt_port = sys_cfg.mqtt_port == 0 ? 1883 : sys_cfg.mqtt_port;
-    sys_cfg.mqtt_topic = cfg.get<String>("MQTT_TOPIC");
+    sys_cfg.mqtt_topic = cfg["MQTT_TOPIC"].as<String>();
     if (!sys_cfg.hostname.length())
       sys_cfg.hostname = String("esp8266");
     if (!sys_cfg.mqtt_topic.length())
@@ -261,32 +261,32 @@ void setup() {
         mqtt_client.setServer(sys_cfg.mqtt_server.c_str(), sys_cfg.mqtt_port);
     }
 
-    JsonArray& json_sm = cfg["SENSORS_MAP"];
+    JsonArray json_sm = cfg["SENSORS_MAP"];
     sys_cfg.sensors_num = json_sm.size();
     if (sys_cfg.sensors_num > 0) {
       sys_cfg.sensors_map = (uint8_t *)malloc(sys_cfg.sensors_num * sizeof(uint8_t));
       sys_stat.temp = (float *)malloc(sys_cfg.sensors_num * sizeof(float));
       for (i = 0; i < sys_cfg.sensors_num; i++) {
-        sys_cfg.sensors_map[i] = json_sm.get<uint8_t>(i);
+        sys_cfg.sensors_map[i] = json_sm[i].as<uint8_t>();
         // invalid mapping, ignore the sensors
         if (sys_cfg.sensors_map[i] >= sys_cfg.sensors_num)
           sys_cfg.sensors_num = 0;
       }
     }
 
-    JsonArray& json_ta = cfg["TTP_ADDR"];
+    JsonArray json_ta = cfg["TTP_ADDR"];
     sys_cfg.ttp_num = json_ta.size();
     if (sys_cfg.ttp_num > 0) {
       sys_cfg.ttp_addr = (uint8_t *)malloc(sys_cfg.ttp_num * sizeof(uint8_t));
       sys_stat.rpm = (uint32_t **)malloc(sys_cfg.ttp_num * sizeof(uint32_t *));
       sys_stat.pwm = (uint32_t *)malloc(sys_cfg.ttp_num * sizeof(uint32_t));
       for (i = 0; i < sys_cfg.ttp_num; i++) {
-        sys_cfg.ttp_addr[i] = json_ta.get<uint8_t>(i);
+        sys_cfg.ttp_addr[i] = json_ta[i].as<uint8_t>();
         sys_stat.rpm[i] = (uint32_t *)malloc((TTP_PINS - 1) * sizeof(uint32_t));
       }
     }
 
-    JsonArray& json_miners = cfg["MINERS"];
+    JsonArray json_miners = cfg["MINERS"];
     sys_cfg.miners_num = json_miners.size();
     if (sys_cfg.miners_num > 0) {
       miners = (Miner *)malloc(sys_cfg.miners_num * sizeof(Miner));
@@ -294,11 +294,11 @@ void setup() {
       memset(miners, 0, sys_cfg.miners_num * sizeof(Miner));
       memset(miners_s, 0, sys_cfg.miners_num * sizeof(Miner_s));
       for (i = 0; i < sys_cfg.miners_num; i++) {
-        JsonObject& json_miner = json_miners[i];
-        miners[i].ip_host = strdup(json_miner.get<const char*>("IP_HOST"));
-        miners[i].port    = json_miner.get<uint16_t>("PORT");
-        miners[i].enabled = json_miner.get<short>("ENABLED");
-        miners[i].type    = (enum miner_type)json_miner.get<int>("TYPE");
+        JsonObject json_miner = json_miners[i];
+        miners[i].ip_host = strdup(json_miner["IP_HOST"].as<const char*>());
+        miners[i].port    = json_miner["PORT"].as<uint16_t>();
+        miners[i].enabled = json_miner["ENABLED"].as<short>();
+        miners[i].type    = (enum miner_type)json_miner["TYPE"].as<int>();
       }
     }
   }
@@ -558,7 +558,6 @@ void as_onDisconnect(void *arg, AsyncClient *c) {
   delete c;
 }
 void as_onData(void *arg, AsyncClient *c, void *data, size_t len) {
-  DynamicJsonBuffer json_buf;
   //dlog("Data : " + String((uint32_t)c, HEX) + " idx: " + String((int)arg) + " " + String(len) +"\r\n");
   parse_miner_state((int)arg, (char *)data);
   dump_miner_state((int)arg);
@@ -663,38 +662,37 @@ void update_miners() {
 /* The task to update the state json string */
 void update_state_json() {
   int i, j, gpus = 0;
-  DynamicJsonBuffer json_buf;
-  JsonObject& root = json_buf.createObject();
+  DynamicJsonDocument root(2048);
 
   root["temp_sensors"] = sys_cfg.sensors_num;
-  JsonArray& s_temp = root.createNestedArray("s_temp");
+  JsonArray s_temp = root.createNestedArray("s_temp");
   for (i = 0; i < sys_cfg.sensors_num; i++)
     s_temp.add(sys_stat.temp[i]);
 
   root["pwms"] = sys_cfg.ttp_num;
-  JsonArray& pwm = root.createNestedArray("pwm");
+  JsonArray pwm = root.createNestedArray("pwm");
   for (i = 0; i < sys_cfg.ttp_num; i++)
     pwm.add(sys_stat.pwm[i]);
 
   root["miners"] = sys_cfg.miners_num;
-  JsonArray& m_gpus = root.createNestedArray("m_gpus");
-  JsonArray& m_type = root.createNestedArray("m_type");
-  JsonArray& m_temp = root.createNestedArray("m_temp");
-  JsonArray& m_hash = root.createNestedArray("m_hash");
-  JsonArray& m_dhash = root.createNestedArray("m_dhash");
-  JsonArray& m_acp_s = root.createNestedArray("m_acp_s");
-  JsonArray& m_rej_s = root.createNestedArray("m_rej_s");
-  JsonArray& m_inc_s = root.createNestedArray("m_inc_s");
-  JsonArray& m_uptime = root.createNestedArray("m_uptime");
-  JsonArray& m_offtime = root.createNestedArray("m_offtime");
+  JsonArray m_gpus = root.createNestedArray("m_gpus");
+  JsonArray m_type = root.createNestedArray("m_type");
+  JsonArray m_temp = root.createNestedArray("m_temp");
+  JsonArray m_hash = root.createNestedArray("m_hash");
+  JsonArray m_dhash = root.createNestedArray("m_dhash");
+  JsonArray m_acp_s = root.createNestedArray("m_acp_s");
+  JsonArray m_rej_s = root.createNestedArray("m_rej_s");
+  JsonArray m_inc_s = root.createNestedArray("m_inc_s");
+  JsonArray m_uptime = root.createNestedArray("m_uptime");
+  JsonArray m_offtime = root.createNestedArray("m_offtime");
   root["gpus"] = gpus;
-  JsonArray& g_temp = root.createNestedArray("g_temp");
-  JsonArray& g_fan = root.createNestedArray("g_fan");
-  JsonArray& g_hash = root.createNestedArray("g_hash");
-  JsonArray& g_dhash = root.createNestedArray("g_dhash");
-  JsonArray& g_acp_s = root.createNestedArray("g_acp_s");
-  JsonArray& g_rej_s = root.createNestedArray("g_rej_s");
-  JsonArray& g_inc_s = root.createNestedArray("g_inc_s");
+  JsonArray g_temp = root.createNestedArray("g_temp");
+  JsonArray g_fan = root.createNestedArray("g_fan");
+  JsonArray g_hash = root.createNestedArray("g_hash");
+  JsonArray g_dhash = root.createNestedArray("g_dhash");
+  JsonArray g_acp_s = root.createNestedArray("g_acp_s");
+  JsonArray g_rej_s = root.createNestedArray("g_rej_s");
+  JsonArray g_inc_s = root.createNestedArray("g_inc_s");
   for (i = 0; i < sys_cfg.miners_num; i++) {
     m_gpus.add(miners_s[i].gpu_num);
     m_type.add((int)(miners[i].type));
@@ -724,7 +722,7 @@ void update_state_json() {
   root["gpus"] = gpus;
 
   state_json_str = String();
-  root.printTo(state_json_str);
+  serializeJson(root, state_json_str);
   //dlog(str);
   //dlog(str.length());
 }
@@ -887,15 +885,17 @@ void dump_miner_state(int i) {
 }
 
 void parse_miner_state(int i, char *str) {
-  DynamicJsonBuffer json_buf;
+  DynamicJsonDocument root(2048);
   int j, tmp_array[MAX_GPU_PER_MINER * 2];
+
+  deserializeJson(root, str);
 
   switch (miners[i].type) {
     case PHOENIX:
     case CLAYMORE_ETH:
     case CLAYMORE_ZEC:
       {
-        JsonArray& result = (json_buf.parseObject(str))["result"];
+        JsonArray result = root["result"];
         miners_s[i].uptime = result[1];
         str2array(result[2], ';', tmp_array, 3);
         miners_s[i].t_hash = tmp_array[0];
@@ -921,9 +921,8 @@ void parse_miner_state(int i, char *str) {
       break;
     case ZM_ZEC:
       {
-        JsonObject& root = json_buf.parseObject(str);
         miners_s[i].uptime = ((int)root["uptime"]) / 60;
-        JsonArray& result = root["result"];
+        JsonArray result = root["result"];
         miners_s[i].gpu_num = result.size();
         miners_s[i].t_hash = 0;
         miners_s[i].t_accepted_s = 0;
