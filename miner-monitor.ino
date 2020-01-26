@@ -128,6 +128,8 @@ enum scr_val_type {
   ON_OFF,
   R_CHAR,
   STRING,
+  MACADR,
+  IPADDR,
   TIME_SPAN,
   SHARE_STATE,
   FLOAT_DELTA,
@@ -142,6 +144,7 @@ typedef struct {
     int val_i;
     float val_f;
     time_t val_t;
+    uint32_t val_u;
   } last;
 } Scr_val;
 #define MAX_SCR_VAL 160
@@ -182,6 +185,9 @@ typedef struct {
   uint32_t  *pwm;
   float     *temp;
   int       freeheap;
+  uint8_t   bssid[6];
+  uint32_t  localip;
+  int       rssi;
 } Sys_stat;
 Sys_stat sys_stat;
 
@@ -308,6 +314,7 @@ void setup() {
 
   dlog(cfg_str + "\r\n");
 
+  WiFi.mode(WIFI_STA);
   WiFi.hostname(sys_cfg.hostname);
 
   sntp_init();
@@ -423,10 +430,13 @@ void update_wifi_status() {
     return;
 
   if (WiFi.status() != WL_CONNECTED) {
+    sys_stat.localip = 0xFFFFFFFF;
+    sys_stat.bssid[0] = sys_stat.bssid[1] = sys_stat.bssid[2] = sys_stat.bssid[3]
+                      = sys_stat.bssid[4] = sys_stat.bssid[5] = 0xFF;
     dlog("Connecting to " + sys_cfg.ssid + "...\r\n");
     WiFi.begin(sys_cfg.ssid.c_str(), sys_cfg.passwd.c_str());
 
-    if (WiFi.waitForConnectResult() != WL_CONNECTED) {
+    if (WiFi.waitForConnectResult(5000) != WL_CONNECTED) {
       bitClear(sys_stat.flags, SYS_WIFI_CONN_BIT);
       return;
     }
@@ -434,8 +444,11 @@ void update_wifi_status() {
     bitSet(sys_stat.flags, SYS_WIFI_CONN_BIT);
     ws.begin();
 
-    dlog("WiFi connected\r\n");
+    dlog("WiFi connected @" + WiFi.localIP().toString() + " (" + WiFi.BSSIDstr() + ")\r\n");
   } else {
+    memcpy(sys_stat.bssid, WiFi.BSSID(), 6);
+    sys_stat.localip = WiFi.localIP();
+    sys_stat.rssi = WiFi.RSSI();
     bitSet(sys_stat.flags, SYS_WIFI_CONN_BIT);
     ws.handleClient();
   }
@@ -816,9 +829,7 @@ byte add_scr_val(enum scr_val_type type, byte y, byte x, void* val1, int val2) {
   scr_val[cur_last_scr_val].y          = y;
   scr_val[cur_last_scr_val].x          = x;
   scr_val[cur_last_scr_val].val1       = val1;
-  scr_val[cur_last_scr_val].val2       = val2;
   scr_val[cur_last_scr_val].last.val_i = -1;
-  cur_last_scr_val++;
 
   switch (type) {
     case INT:
@@ -834,20 +845,29 @@ byte add_scr_val(enum scr_val_type type, byte y, byte x, void* val1, int val2) {
       x += 6;  /* ONLINE or OFLINE*/
       break;
     case TIME_SPAN:
-      x += 9;  /* 99D23H59M */
+      x += (val2 = 9);  /* 99D23H59M */
       break;
     case SHARE_STATE:
-      x += 18; /* 3312/1/0    99.00% */
+      x += (val2 = 18); /* 3312/1/0    99.00% */
       break;
     case STRING:
-      x += strlen((char*)val1);
+      x += (val2 = strlen((char*)val1));
       break;
     case DATE:
       x += 24; /*Mon Mar 19 08:09:18 2018*/
       break;
+    case MACADR:
+      x += (val2 = 17); /* FF:FF:FF:FF:FF:FF */
+      break;
+    case IPADDR:
+      x += (val2 = 15); /* 255.255.255.255 */
+      break;
     default:
     break;
   }
+
+  scr_val[cur_last_scr_val].val2       = val2;
+  cur_last_scr_val++;
 
   return x;
 }
@@ -948,6 +968,7 @@ void parse_miner_state(int i, char *str) {
       Miner State  ( Mon Mar 19 08:09:18 2018 --- Mon Mar 19 08:09:18 2018 )
 --------------------------------------------------------------------------------
  System | WIFI: OK | CFG: OK | PID: KO  TARGET: 00  PWM: 28/28 | MQTT: OK
+ WIFI   | SSID: xxxx@xx:xx:xx:xx:xx:xx | IP: 192.168.2.100 | RSSI: -55
  Sensor | Inlet: 18.37c | Water: 31.31c | Outlet: 31.56c | Delta: 12.94c
  Fan0   | 4095 | 4125 | 3855 | 5970 | 5820 | 5775 | 5835 | 1065 | 5745 | 0000
  Miner0 | 6 | ONLINE | 170MH/s | 36.33c | 00D23H13M | A/R/I: 3312/1/0 99.00%
@@ -972,8 +993,7 @@ void setup_screen() {
   offset = add_scr_val(DATE, row, offset, NULL, 0);
   offset = add_scr_val(STRING, row, offset, (void *)" --- ", 0);
   offset = add_scr_val(DATE, row, offset, NULL, 1);
-  offset = add_scr_val(STRING, row, offset, (void *)" )", 0);
-  row++;
+  offset = add_scr_val(STRING, row++, offset, (void *)" )", 0);
   add_scr_val(R_CHAR, row++, 0, (void *)'-', COLS);
 
   /* System | WIFI: OK | CFG: OK | PID: KO  TARGET: 00  PWM: 28/28 | MQTT: OK */
@@ -992,6 +1012,17 @@ void setup_screen() {
   offset = add_scr_val(INT, row, offset, &sys_stat.pwm[1], 2);
   offset = add_scr_val(STRING, row, offset, (void *)" | MQTT: ", 0);
   add_scr_val(OK_KO, row++, offset, &sys_stat.flags, SYS_MQTT_CONN_BIT);
+
+  /* WIFI   | SSID: xxxx@xx:xx:xx:xx:xx:xx | IP: 192.168.2.100 | RSSI: -55 */
+  offset = 0;
+  offset = add_scr_val(STRING, row, offset, (void *)" WIFI   | SSID: ", 0);
+  offset = add_scr_val(STRING, row, offset, (void *)sys_cfg.ssid.c_str(), 0);
+  offset = add_scr_val(R_CHAR, row, offset, (void *)'@', 1);
+  offset = add_scr_val(MACADR, row, offset, (void *)sys_stat.bssid, 0);
+  offset = add_scr_val(STRING, row, offset, (void *)" | IP: ", 0);
+  offset = add_scr_val(IPADDR, row, offset, (void *)&sys_stat.localip, 0);
+  offset = add_scr_val(STRING, row, offset, (void *)" | RSSI: ", 0);
+  add_scr_val(INT, row++, offset, &sys_stat.rssi, 3);
 
   /* Sensor | Inlet: 18.37c | Water: 31.31c | Outlet: 31.56c | Delta: 12.94c */
   offset = 0;
@@ -1049,9 +1080,10 @@ void setup_screen() {
 }
 
 void update_scr() {
-  int i, orig_x, orig_y, changed, redraw, val_i;
+  int i, n, orig_x, orig_y, changed, redraw, val_i;
   float val_f;
   time_t val_t;
+  uint32_t val_u;
 
   getyx(orig_y, orig_x);
   redraw = SYS_REDRAW_SCR;
@@ -1064,7 +1096,7 @@ void update_scr() {
         val_i = bitRead(*(int *)(scr_val[i].val1), scr_val[i].val2);
         if (val_i != scr_val[i].last.val_i || redraw) {
           scr_val[i].last.val_i = val_i;
-          changed = 1;
+          changed = 2;
           str = val_i ? String("OK") : String("KO");
         }
         break;
@@ -1072,7 +1104,7 @@ void update_scr() {
         val_i = *(int *)(scr_val[i].val1);
         if (val_i != scr_val[i].last.val_i || redraw) {
           scr_val[i].last.val_i = val_i;
-          changed = 1;
+          changed = 2;
           str = val_i ? String("ONLINE") : String("OFLINE");
         }
         break;
@@ -1143,14 +1175,38 @@ void update_scr() {
         if (val_t != scr_val[i].last.val_t || redraw) {
           scr_val[i].last.val_t = val_t;
           str = ctime(&val_t);
+          changed = 2;
+        }
+        break;
+      case MACADR:
+        val_u = BKDRHash((uint8_t *)scr_val[i].val1, 6);
+        if (val_u != scr_val[i].last.val_u || redraw) {
+          uint8_t *bssid = (uint8_t *)scr_val[i].val1;
+          scr_val[i].last.val_u = val_u;
           changed = 1;
+          str = String(String(bssid[0], HEX) + ":" + String(bssid[1], HEX) + ":"
+                     + String(bssid[2], HEX) + ":" + String(bssid[3], HEX) + ":"
+                     + String(bssid[4], HEX) + ":" + String(bssid[5], HEX));
+        }
+        break;
+      case IPADDR:
+        val_u = *(uint32_t *)(scr_val[i].val1);
+        if (val_u != scr_val[i].last.val_u || redraw) {
+          scr_val[i].last.val_u = val_u;
+          changed = 1;
+          str = IPAddress(val_u).toString();
         }
         break;
       default:
         break;
     }
-    if (changed)
+    if (changed) {
       mvaddstr(scr_val[i].y, scr_val[i].x, str.c_str());
+      if (scr_val[i].val2 > str.length() && changed == 1) {
+        for (n = 0; n < scr_val[i].val2 - str.length(); n++)
+          mvaddch(scr_val[i].y, scr_val[i].x + str.length() + n, ' ');
+      }
+    }
   }
 
   move(orig_y, orig_x);
@@ -1284,3 +1340,13 @@ float average(int *buf, int num) {
   return (sum / num);
 }
 
+uint32_t BKDRHash(uint8_t *buf, int num)
+{
+  uint32_t hash = 0;
+  int i;
+
+  for (i = 0; i < num; i++)
+    hash = (hash << 5) - hash + (*buf++);
+
+  return (hash & 0x7FFFFFFF);
+}
