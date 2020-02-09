@@ -229,6 +229,7 @@ void setup() {
   pinMode(ONE_WIRE_BUS, INPUT_PULLUP);
   sensors.begin();
   sensors.setWaitForConversion(FALSE);
+  u8g2.setBusClock(500000);
   u8g2.begin();
 
   pid_set_point = 15;
