@@ -522,7 +522,7 @@ void update_disp() {
         + miners_s[0].t_dhash / 1000 + "m "
         + (int)miners_s[0].t_temp + "c "
         + (miners_s[0].gpu_num ? miners_s[0].uptime : miners_s[0].offtime) / 60
-        + "h " + sys_stat.freeheap;
+        + "h " + sys_stat.freeheap + " " + sys_stat.rpm[0][4];
   u8g2.drawStr(0, 23, str.c_str());
   str = String();
   for (i = 1; i < sys_cfg.miners_num; i++)
