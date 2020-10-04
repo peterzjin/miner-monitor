@@ -4,16 +4,33 @@ The sys.cfg should be something like:
 	"SSID"		:	"xxx",
 	"PASSWD"	:	"xxx",
 	"HOSTNAME"	:	"xxx",
-	"MQTT_SERVER"	:	"xxx",
-	"MQTT_PORT"	:	xxx,
-	"MQTT_TOPIC"	:	"xxx",
-	"MQTT_USER"	:	"xxx",
-	"MQTT_PASSWD"	:	"xxx",
-	"SENSORS_MAP"   :       [x, y],
-	"TTP_ADDR"      :       [x, y],
+	"MQTT"		:	{
+					"ENABLED"	:	x,
+					"SERVER"	:	"xxx.xxx.xxx.xxx",
+					"PORT"		:	xxx,
+					"TOPIC"		:	"xxx",
+					"USER"		:	"xxx",
+					"PASSWD"		:	"xxx"
+				},
+	"SENSORS"	:	{
+					"ENABLED"	:	x,
+					"MAP"		:	[x, y],
+					"PIN"		:	"Dx"
+				},
+	"TTP"		:	{
+					"ENABLED"	:	x,
+					"ADDR"		:	[x, y]
+				},
+	"DISPLAY"	:	{
+					"ENABLED"	:	x,
+					"TYPE"		:	x
+				},
+	"EXT_GPIO"	:	{
+					"ENABLED"	:	x
+				},
 	"MINERS"	:	[
 				{
-					"IP_HOST"	:	"xxx",
+					"IP_HOST"	:	"xxx.xxx.xxx.xxx",
 					"PORT"		:	xxx,
 					"ENABLED"	:	x,
 					"TYPE"		:	x

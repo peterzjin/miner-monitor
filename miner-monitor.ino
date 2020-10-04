@@ -31,7 +31,6 @@
 
 #include "FS.h"
 
-#define ONE_WIRE_BUS D1
 #define TTP_PINS 11
 #define RPM_MULTI 15
 
@@ -40,8 +39,8 @@
 #define MINER_FONT u8g2_font_ncenR08_tr
 #define VOLT_AMP_FONT u8g2_font_timR08_tn
 
-OneWire oneWire(ONE_WIRE_BUS);
-DallasTemperature sensors(&oneWire);
+OneWire oneWire;
+DallasTemperature sensors;
 PCF857x pcf8574(0x27, &Wire);
 
 //U8G2_ST7920_128X64_1_SW_SPI u8g2(U8G2_R0, D5, D7, D8);
@@ -159,20 +158,32 @@ void update_scr() { }
 #define RESET_PIN 6
 #define BOOT_PIN  7
 
+enum panel_type {
+  ST7920_128X64,
+  MAX_PANEL_TYPE,
+};
+
 String state_json_str;
 typedef struct {
   String    ssid;
   String    passwd;
   String    hostname;
+  bool      mqtt_enabled;
   String    mqtt_server;
   uint16_t  mqtt_port;
   String    mqtt_topic;
   String    mqtt_user;
   String    mqtt_passwd;
+  bool      sensors_enabled;
   uint8_t   sensors_num;
   uint8_t   *sensors_map;
+  uint8_t   sensors_pin;
+  bool      ttp_enabled;
   uint8_t   ttp_num;
   uint8_t   *ttp_addr;
+  bool      display_enabled;
+  int       display_type;
+  bool      ext_gpio_enabled;
   int       miners_num;
 } Sys_cfg;
 Sys_cfg sys_cfg;
@@ -224,14 +235,6 @@ void setup() {
 
   Serial.begin(115200);
 
-  Wire.begin(D3, D2);
-  pcf8574.begin();
-  pinMode(ONE_WIRE_BUS, INPUT_PULLUP);
-  sensors.begin();
-  sensors.setWaitForConversion(FALSE);
-  u8g2.setBusClock(500000);
-  u8g2.begin();
-
   pid_set_point = 15;
   pwm_pid.SetMode(MANUAL);
   pwm_pid.SetSampleTime(16100);
@@ -248,27 +251,36 @@ void setup() {
     deserializeJson(cfg, cfg_str);
 
     f.close();
+    memset(&sys_cfg, 0, sizeof(Sys_cfg));
     sys_cfg.ssid = cfg["SSID"].as<String>();
     sys_cfg.passwd = cfg["PASSWD"].as<String>();
     sys_cfg.hostname = cfg["HOSTNAME"].as<String>();
-    sys_cfg.mqtt_server = cfg["MQTT_SERVER"].as<String>();
-    sys_cfg.mqtt_user = cfg["MQTT_USER"].as<String>();
-    sys_cfg.mqtt_passwd = cfg["MQTT_PASSWD"].as<String>();
-    sys_cfg.mqtt_port = cfg["MQTT_PORT"].as<uint16_t>();
-    sys_cfg.mqtt_port = sys_cfg.mqtt_port == 0 ? 1883 : sys_cfg.mqtt_port;
-    sys_cfg.mqtt_topic = cfg["MQTT_TOPIC"].as<String>();
+
     if (!sys_cfg.hostname.length())
       sys_cfg.hostname = String("esp8266");
+
+    if (sys_cfg.ssid.length())
+      bitSet(sys_stat.flags, SYS_CFG_LOAD_BIT);
+
+    JsonObject json_mqtt = cfg["MQTT"];
+    sys_cfg.mqtt_enabled = json_mqtt["ENABLED"].as<bool>();
+    sys_cfg.mqtt_server = json_mqtt["SERVER"].as<String>();
+    sys_cfg.mqtt_user = json_mqtt["USER"].as<String>();
+    sys_cfg.mqtt_passwd = json_mqtt["PASSWD"].as<String>();
+    sys_cfg.mqtt_port = json_mqtt["PORT"].as<uint16_t>();
+    sys_cfg.mqtt_port = sys_cfg.mqtt_port == 0 ? 1883 : sys_cfg.mqtt_port;
+    sys_cfg.mqtt_topic = json_mqtt["TOPIC"].as<String>();
+
     if (!sys_cfg.mqtt_topic.length())
       sys_cfg.mqtt_topic = String("example");
+    if (sys_cfg.mqtt_server.length())
+      mqtt_client.setServer(sys_cfg.mqtt_server.c_str(), sys_cfg.mqtt_port);
 
-    if (sys_cfg.ssid.length()) {
-      bitSet(sys_stat.flags, SYS_CFG_LOAD_BIT);
-      if (sys_cfg.mqtt_server.length())
-        mqtt_client.setServer(sys_cfg.mqtt_server.c_str(), sys_cfg.mqtt_port);
-    }
-
-    JsonArray json_sm = cfg["SENSORS_MAP"];
+    JsonObject json_sensors = cfg["SENSORS"];
+    sys_cfg.sensors_pin = str2pin(json_sensors["PIN"].as<String>());
+    sys_cfg.sensors_enabled = sys_cfg.sensors_pin == 0xFF ?
+                              false : json_sensors["ENABLED"].as<bool>();
+    JsonArray json_sm = json_sensors["MAP"];
     sys_cfg.sensors_num = json_sm.size();
     if (sys_cfg.sensors_num > 0) {
       sys_cfg.sensors_map = (uint8_t *)malloc(sys_cfg.sensors_num * sizeof(uint8_t));
@@ -281,7 +293,9 @@ void setup() {
       }
     }
 
-    JsonArray json_ta = cfg["TTP_ADDR"];
+    JsonObject json_ttp = cfg["TTP"];
+    sys_cfg.ttp_enabled = json_ttp["ENABLED"].as<bool>();
+    JsonArray json_ta = json_ttp["ADDR"];
     sys_cfg.ttp_num = json_ta.size();
     if (sys_cfg.ttp_num > 0) {
       sys_cfg.ttp_addr = (uint8_t *)malloc(sys_cfg.ttp_num * sizeof(uint8_t));
@@ -292,6 +306,14 @@ void setup() {
         sys_stat.rpm[i] = (uint32_t *)malloc((TTP_PINS - 1) * sizeof(uint32_t));
       }
     }
+
+    JsonObject json_display = cfg["DISPLAY"];
+    sys_cfg.display_type = json_display["TYPE"].as<int>();
+    sys_cfg.display_enabled = sys_cfg.display_type >= MAX_PANEL_TYPE ?
+                              false : json_display["ENABLED"].as<bool>();
+
+    JsonObject json_ext_gpio = cfg["EXT_GPIO"];
+    sys_cfg.ext_gpio_enabled = json_ext_gpio["ENABLED"].as<bool>();
 
     JsonArray json_miners = cfg["MINERS"];
     sys_cfg.miners_num = json_miners.size();
@@ -307,6 +329,27 @@ void setup() {
         miners[i].enabled = json_miner["ENABLED"].as<short>();
         miners[i].type    = (enum miner_type)json_miner["TYPE"].as<int>();
       }
+    }
+  }
+
+  if (sys_cfg.sensors_enabled) {
+    oneWire.begin(sys_cfg.sensors_pin);
+    pinMode(sys_cfg.sensors_pin, INPUT_PULLUP);
+    sensors.setOneWire(&oneWire);
+    sensors.begin();
+    sensors.setWaitForConversion(FALSE);
+  }
+
+  if (sys_cfg.ttp_enabled)
+    Wire.begin(D3, D2);
+
+  if (sys_cfg.ext_gpio_enabled)
+    pcf8574.begin();
+
+  if (sys_cfg.display_enabled) {
+    if (sys_cfg.display_type == ST7920_128X64) {
+      u8g2.setBusClock(500000);
+      u8g2.begin();
     }
   }
 
@@ -364,9 +407,11 @@ void loop() {
     byte pin = SYS_NEED_RESET ? RESET_PIN : BOOT_PIN;
     bitClear(sys_stat.flags, SYS_NEED_RESET_BIT);
     bitClear(sys_stat.flags, SYS_NEED_BOOT_BIT);
-    pcf8574.write(pin, LOW);
-    delay(200);
-    pcf8574.write(pin, HIGH);
+    if (sys_cfg.ext_gpio_enabled) {
+      pcf8574.write(pin, LOW);
+      delay(200);
+      pcf8574.write(pin, HIGH);
+    }
   }
 
   task_list.update();
@@ -408,7 +453,7 @@ void loop() {
     }
   }
 
-  if (need_set_pwm) {
+  if (sys_cfg.ttp_enabled && need_set_pwm) {
     next_pwm_val = next_pwm_val > MAX_PWM_VAL ? MAX_PWM_VAL :
                   (next_pwm_val < MIN_PWM_VAL ? MIN_PWM_VAL : next_pwm_val);
     dlog(String("Get PWM value: ") + next_pwm_val + "\r\n");
@@ -457,6 +502,9 @@ void update_wifi_status() {
 
 /* The task to get the temperature from sensors */
 void update_temp() {
+  if (!sys_cfg.sensors_enabled)
+    return;
+
   sensors.requestTemperatures();
 #if 1
   task_list.after(750, _update_temp);
@@ -476,6 +524,9 @@ void update_temp() {
 void update_tacho_pwm() {
   int i, j;
   unsigned char val_h, val_l;
+
+  if (!sys_cfg.ttp_enabled)
+    return;
 
   for (i = 0; i < sys_cfg.ttp_num; i++) {
     j = 0;
@@ -499,6 +550,15 @@ void update_tacho_pwm() {
 void update_disp() {
   String str;
   int i;
+
+  update_scr();
+
+  if (!sys_cfg.display_enabled)
+    return;
+
+  if (sys_cfg.display_type != ST7920_128X64)
+    return;
+
   #if 0
   u8g2.firstPage();
   do {
@@ -543,8 +603,6 @@ void update_disp() {
   */
   u8g2.sendBuffer();
   #endif
-
-  update_scr();
 }
 
 /* The task to get the info from miners */
@@ -749,7 +807,7 @@ void memory_state() {
 
 /* The task to send mqtt data to the server */
 void send_mqtt() {
-  if (!SYS_WIFI_CONNECTED)
+  if (!sys_cfg.mqtt_enabled || !SYS_WIFI_CONNECTED)
     return;
 
   if (!mqtt_client.connected()) {
@@ -1026,26 +1084,30 @@ void setup_screen() {
   add_scr_val(INT, row++, offset, &sys_stat.rssi, 3);
 
   /* Sensor | Inlet: 18.37c | Water: 31.31c | Outlet: 31.56c | Delta: 12.94c */
-  offset = 0;
-  offset = add_scr_val(STRING, row, offset, (void *)" Sensor | Inlet: ", 0);
-  offset = add_scr_val(FLOAT, row, offset, &sys_stat.temp[2], 5);
-  offset = add_scr_val(STRING, row, offset, (void *)"c | Water: ", 0);
-  offset = add_scr_val(FLOAT, row, offset, &sys_stat.temp[0], 5);
-  offset = add_scr_val(STRING, row, offset, (void *)"c | Outlet: ", 0);
-  offset = add_scr_val(FLOAT, row, offset, &sys_stat.temp[1], 5);
-  offset = add_scr_val(STRING, row, offset, (void *)"c | Delta: ", 0);
-  add_scr_val(FLOAT_DELTA, row++, offset, &sys_stat.temp[0], 5);
+  if (sys_cfg.sensors_enabled) {
+    offset = 0;
+    offset = add_scr_val(STRING, row, offset, (void *)" Sensor | Inlet: ", 0);
+    offset = add_scr_val(FLOAT, row, offset, &sys_stat.temp[2], 5);
+    offset = add_scr_val(STRING, row, offset, (void *)"c | Water: ", 0);
+    offset = add_scr_val(FLOAT, row, offset, &sys_stat.temp[0], 5);
+    offset = add_scr_val(STRING, row, offset, (void *)"c | Outlet: ", 0);
+    offset = add_scr_val(FLOAT, row, offset, &sys_stat.temp[1], 5);
+    offset = add_scr_val(STRING, row, offset, (void *)"c | Delta: ", 0);
+    add_scr_val(FLOAT_DELTA, row++, offset, &sys_stat.temp[0], 5);
+  }
 
   /* Fan0   | 4095 | 4125 | 3855 | 5970 | 5820 | 5775 | 5835 | 1065 | 5745 | 0000 */
-  for (i = 0; i < sys_cfg.ttp_num; i++) {
-    sprintf(c_str = strdup(" Fan0  "), " Fan%d  ", i);
-    offset = 0;
-    offset = add_scr_val(STRING, row, offset, c_str, 0);
-    for (j = 0; j < TTP_PINS - 1; j++, col += 7) {
-      offset = add_scr_val(STRING, row, offset, (void *)" | ", 0);
-      offset = add_scr_val(INT, row, offset, &sys_stat.rpm[i][j], 4);
+  if (sys_cfg.ttp_enabled) {
+    for (i = 0; i < sys_cfg.ttp_num; i++) {
+      sprintf(c_str = strdup(" Fan0  "), " Fan%d  ", i);
+      offset = 0;
+      offset = add_scr_val(STRING, row, offset, c_str, 0);
+      for (j = 0; j < TTP_PINS - 1; j++, col += 7) {
+        offset = add_scr_val(STRING, row, offset, (void *)" | ", 0);
+        offset = add_scr_val(INT, row, offset, &sys_stat.rpm[i][j], 4);
+      }
+      row++;
     }
-    row++;
   }
 
   /* Miner0 | 6 | ONLINE | 170MH/s | 36.33c | 00D23H13M | A/R/I: 3312/1/0 99.00% */
@@ -1326,6 +1388,21 @@ int str2array(String str, char sep, int *array, int max_size) {
   }
 
   return i;
+}
+
+static uint8_t arduino_pins[] = {D0, D1, D2, D3, D4, D5, D6, D7, D8, D9, D10};
+uint8_t str2pin(String str) {
+  if (str.charAt(0) != 'D')
+    return 0xFF;
+
+  if (str.length() == 2 && str.charAt(1) >= '0' && str.charAt(1) <= '9')
+    return arduino_pins[str.charAt(1) - '0'];
+
+  if (str.length() == 3 && str.charAt(1) == '1'
+                        && str.charAt(2) >= '0' && str.charAt(2) <= '9')
+    return arduino_pins[10 + str.charAt(2) - '0'];
+
+  return 0xFF;
 }
 
 float average(int *buf, int num) {
