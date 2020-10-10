@@ -10,7 +10,7 @@ The sys.cfg should be something like:
 					"PORT"		:	xxx,
 					"TOPIC"		:	"xxx",
 					"USER"		:	"xxx",
-					"PASSWD"		:	"xxx"
+					"PASSWD"	:	"xxx"
 				},
 	"SENSORS"	:	{
 					"ENABLED"	:	x,
@@ -23,7 +23,7 @@ The sys.cfg should be something like:
 				},
 	"DISPLAY"	:	{
 					"ENABLED"	:	x,
-					"TYPE"		:	x
+					"OUTPUT"	:	[x, y]
 				},
 	"EXT_GPIO"	:	{
 					"ENABLED"	:	x

@@ -115,12 +115,16 @@ typedef struct {
 } Miner_s;
 Miner_s *miners_s;
 
-#define USE_SCREEN
-#ifdef USE_SCREEN
 #define SCREEN_LINES 60
-#define dlog scr_log
-enum scr_val_type {
+#define MAX_SCR_VAL 160
+enum disp_type {
+  SERIAL_SCREEN,
+  ST7920_128X64,
+  MAX_PANEL_TYPE,
+};
+enum disp_val_type {
   INT,
+  LOG,
   DATE,
   FLOAT,
   OK_KO,
@@ -134,9 +138,9 @@ enum scr_val_type {
   FLOAT_DELTA,
 };
 typedef struct {
-  enum scr_val_type type;
-  byte y;
-  byte x;
+  enum disp_val_type type;
+  uint16_t y;
+  uint16_t x;
   void *val1;
   int val2;
   union {
@@ -145,23 +149,27 @@ typedef struct {
     time_t val_t;
     uint32_t val_u;
   } last;
-} Scr_val;
-#define MAX_SCR_VAL 160
-int cur_last_scr_val, log_y, log_x;
-Scr_val scr_val[MAX_SCR_VAL];
-#else
-#define dlog Serial.print
-void setup_screen() { }
-void update_scr() { }
-#endif
+} Disp_val;
+typedef struct _Disp_outp Disp_outp;
+typedef void (*Disp_log)(Disp_outp *outp, const char *str);
+typedef void (*Disp_render)(Disp_outp *outp);
+typedef void (*Disp_init)(Disp_outp *outp);
+struct _Disp_outp {
+  enum disp_type type;
+  int            last_val;
+  Disp_val       disp_val[MAX_SCR_VAL];
+  Disp_render    render;
+  Disp_init      init;
+};
+void init_scr(Disp_outp *outp);
+void init_u8g2(Disp_outp *outp);
+void update_scr(Disp_outp *outp);
+void update_u8g2(Disp_outp *outp);
+Disp_init   d_inits[]   = {init_scr, init_u8g2};
+Disp_render d_renders[] = {update_scr, update_u8g2};
 
 #define RESET_PIN 6
 #define BOOT_PIN  7
-
-enum panel_type {
-  ST7920_128X64,
-  MAX_PANEL_TYPE,
-};
 
 String state_json_str;
 typedef struct {
@@ -182,7 +190,8 @@ typedef struct {
   uint8_t   ttp_num;
   uint8_t   *ttp_addr;
   bool      display_enabled;
-  int       display_type;
+  int       display_num;
+  Disp_outp *display_output;
   bool      ext_gpio_enabled;
   int       miners_num;
 } Sys_cfg;
@@ -308,9 +317,20 @@ void setup() {
     }
 
     JsonObject json_display = cfg["DISPLAY"];
-    sys_cfg.display_type = json_display["TYPE"].as<int>();
-    sys_cfg.display_enabled = sys_cfg.display_type >= MAX_PANEL_TYPE ?
-                              false : json_display["ENABLED"].as<bool>();
+    sys_cfg.display_enabled = json_display["ENABLED"].as<bool>();
+    JsonArray json_do = json_display["OUTPUT"];
+    for (i = 0; i < json_do.size(); i++) {
+      if (json_do[i].as<int>() > MAX_PANEL_TYPE)
+        continue;
+
+      sys_cfg.display_num++;
+      sys_cfg.display_output = (Disp_outp *)realloc(sys_cfg.display_output,
+                                sys_cfg.display_num * sizeof(Disp_outp));
+      memset(&sys_cfg.display_output[i], 0, sizeof(Disp_outp));
+      sys_cfg.display_output[i].type   = (enum disp_type)json_do[i].as<int>();
+      sys_cfg.display_output[i].render = d_renders[sys_cfg.display_output[i].type];
+      sys_cfg.display_output[i].init   = d_inits[sys_cfg.display_output[i].type];
+    }
 
     JsonObject json_ext_gpio = cfg["EXT_GPIO"];
     sys_cfg.ext_gpio_enabled = json_ext_gpio["ENABLED"].as<bool>();
@@ -347,14 +367,8 @@ void setup() {
     pcf8574.begin();
 
   if (sys_cfg.display_enabled) {
-    if (sys_cfg.display_type == ST7920_128X64) {
-      u8g2.setBusClock(500000);
-      u8g2.begin();
-    }
+    init_display();
   }
-
-  setup_screen();
-  update_scr();
 
   dlog(cfg_str + "\r\n");
 
@@ -548,61 +562,12 @@ void update_tacho_pwm() {
 
 /* The task to draw the display */
 void update_disp() {
-  String str;
-  int i;
-
-  update_scr();
-
   if (!sys_cfg.display_enabled)
     return;
 
-  if (sys_cfg.display_type != ST7920_128X64)
-    return;
+  update_display();
 
-  #if 0
-  u8g2.firstPage();
-  do {
-    u8g2.setFont(TEMP_FONT);
-    u8g2.drawStr(0, 13, get_str_float(sys_stat.temp, 3, 0, 5).c_str());
-    u8g2.setFont(RPM_FONT);
-    u8g2.drawStr(0, 23, get_str_int(sys_stat.rpm[curr_tacho_pwm], 5, 0, 4).c_str());
-    u8g2.setFont(RPM_FONT);
-    u8g2.drawStr(0, 32, get_str_int(sys_stat.rpm[curr_tacho_pwm], 5, 5, 4).c_str());
-    u8g2.setFont(VOLT_AMP_FONT);
-    u8g2.drawStr(114, 23, get_str_int(&volt, 1, 0, 3).c_str());
-    u8g2.setFont(VOLT_AMP_FONT);
-    u8g2.drawStr(114, 32, get_str_int(&amp, 1, 0, 3).c_str());
-  } while ( u8g2.nextPage() );
-  #else
-  u8g2.clearBuffer();
-  u8g2.setFont(TEMP_FONT);
-  u8g2.drawStr(0, 13, get_str_float(sys_stat.temp, 3, 0, 5).c_str());
-  u8g2.setFont(MINER_FONT);
-  str = String(miners_s[0].t_hash / 1000) + "m "
-        + miners_s[0].t_dhash / 1000 + "m "
-        + (int)miners_s[0].t_temp + "c "
-        + (miners_s[0].gpu_num ? miners_s[0].uptime : miners_s[0].offtime) / 60
-        + "h " + sys_stat.freeheap + " " + sys_stat.rpm[0][4];
-  u8g2.drawStr(0, 23, str.c_str());
-  str = String();
-  for (i = 1; i < sys_cfg.miners_num; i++)
-    if (miners[i].enabled)
-      str += String(miners_s[i].t_hash) + "m " + (int)miners_s[i].t_temp + "c "
-          + (miners_s[i].gpu_num ? miners_s[i].uptime : miners_s[i].offtime) / 60
-          + "h ";
-  u8g2.drawStr(0, 32, str.c_str());
-  /*
-  u8g2.setFont(RPM_FONT);
-  u8g2.drawStr(0, 23, get_str_int(sys_stat.rpm[curr_tacho_pwm], 5, 0, 4).c_str());
-  u8g2.setFont(RPM_FONT);
-  u8g2.drawStr(0, 32, get_str_int(sys_stat.rpm[curr_tacho_pwm], 5, 5, 4).c_str());
-  u8g2.setFont(VOLT_AMP_FONT);
-  u8g2.drawStr(114, 23, get_str_int(&volt, 1, 0, 3).c_str());
-  u8g2.setFont(VOLT_AMP_FONT);
-  u8g2.drawStr(114, 32, get_str_int(&amp, 1, 0, 3).c_str());
-  */
-  u8g2.sendBuffer();
-  #endif
+  return;
 }
 
 /* The task to get the info from miners */
@@ -828,6 +793,18 @@ void send_mqtt() {
   mqtt_client.publish(sys_cfg.mqtt_topic.c_str(), state_json_str.c_str());
 }
 
+void dlog(const char *str) {
+  int i;
+
+  for (i = 0; i < sys_cfg.display_num; i++)
+    if (sys_cfg.display_output[i].disp_val[0].type == LOG)
+      ((Disp_log)sys_cfg.display_output[i].disp_val[0].val1)(&sys_cfg.display_output[i], str);
+}
+
+void dlog(String str) {
+  dlog(str.c_str());
+}
+
 void _update_temp() {
   int i, n;
   for (i = 0; i < sys_cfg.sensors_num; i++) {
@@ -840,55 +817,16 @@ void _update_temp() {
            + " D: " + (sys_stat.temp[0] - sys_stat.temp[2]) + "\r\n");
 }
 
-#ifdef USE_SCREEN
-void Arduino_putchar(uint8_t c) {
-  Serial.write(c);
-}
-
-void scr_log(const char *str) {
-  int orig_x, orig_y;
-  char ch;
-
-  if (str == NULL || *str == '\0')
-    return;
-
-  getyx(orig_y, orig_x);
-
-  if (log_x == 0) {
-    String prefix = String(" [") + millis() + "] ";
-    scroll();
-    mvaddstr(log_y, log_x, prefix.c_str());
-    log_x += prefix.length();
-  }
-
-  while (ch = *(str++)) {
-    if (ch == '\r') {
-      continue;
-    } else if (ch == '\n') {
-      log_x = 0;
-      scr_log(str);
-      break;
-    } else {
-      mvaddch(log_y, log_x++, ch);
-    }
-  }
-
-  move(orig_y, orig_x);
-}
-
-void scr_log(String str) {
-  scr_log(str.c_str());
-}
-
-byte add_scr_val(enum scr_val_type type, byte y, byte x, void* val1, int val2) {
-  if (cur_last_scr_val >= MAX_SCR_VAL)
+byte add_disp_val(Disp_outp *outp, enum disp_val_type type,
+                  byte y, byte x, void* val1, int val2) {
+  if (outp->last_val >= MAX_SCR_VAL)
     return x;
 
-  scr_val[cur_last_scr_val].type       = type;
-  scr_val[cur_last_scr_val].y          = y;
-  scr_val[cur_last_scr_val].x          = x;
-  scr_val[cur_last_scr_val].val1       = val1;
-  scr_val[cur_last_scr_val].last.val_i = -1;
+  outp->disp_val[outp->last_val].type       = type;
+  outp->disp_val[outp->last_val].y          = y;
+  outp->disp_val[outp->last_val].x          = x;
+  outp->disp_val[outp->last_val].val1       = val1;
+  outp->disp_val[outp->last_val].last.val_i = -1;
 
   switch (type) {
     case INT:
@@ -925,8 +863,8 @@ byte add_scr_val(enum scr_val_type type, byte y, byte x, void* val1, int val2) {
     break;
   }
 
-  scr_val[cur_last_scr_val].val2       = val2;
-  cur_last_scr_val++;
+  outp->disp_val[outp->last_val].val2       = val2;
+  outp->last_val++;
 
   return x;
 }
@@ -1023,6 +961,42 @@ void parse_miner_state(int i, char *str) {
   miners_s[i].t_temp = average(miners_s[i].temp, miners_s[i].gpu_num);
 }
 
+void Arduino_putchar(uint8_t c) {
+  Serial.write(c);
+}
+
+void scr_log(Disp_outp *outp, const char *str) {
+  Disp_val *vlog = outp->disp_val;
+  int orig_x, orig_y;
+  char ch;
+
+  if (str == NULL || *str == '\0')
+    return;
+
+  getyx(orig_y, orig_x);
+
+  if (vlog->x == 0) {
+    String prefix = String(" [") + millis() + "] ";
+    scroll();
+    mvaddstr(vlog->y, vlog->x, prefix.c_str());
+    vlog->x += prefix.length();
+  }
+
+  while (ch = *(str++)) {
+    if (ch == '\r') {
+      continue;
+    } else if (ch == '\n') {
+      vlog->x = 0;
+      scr_log(outp, str);
+      break;
+    } else {
+      mvaddch(vlog->y, vlog->x++, ch);
+    }
+  }
+
+  move(orig_y, orig_x);
+}
+
 /*
       Miner State  ( Mon Mar 19 08:09:18 2018 --- Mon Mar 19 08:09:18 2018 )
 --------------------------------------------------------------------------------
@@ -1036,64 +1010,70 @@ void parse_miner_state(int i, char *str) {
 --------------------------------------------------------------------------------
 CMD:
  */
-void setup_screen() {
+void init_scr(Disp_outp *outp) {
   int col, row = 0, i, j, offset;
   char *c_str;
+
+  if (outp == NULL || outp->type != SERIAL_SCREEN)
+    return;
 
   setFunction_putchar(Arduino_putchar);
   initscr();
   clear();
-  cur_last_scr_val = 0;
+
+  outp->last_val = 0;
+
+  add_disp_val(outp, LOG, SCREEN_LINES - 3, 0, (void *)scr_log, 0);
 
   /* Miner State  ( Mon Mar 19 08:09:18 2018 --- Mon Mar 19 08:09:18 2018 )*/
   offset = 6;
-  offset = add_scr_val(STRING, row, offset, (void *)"Miner State", 0);
-  offset = add_scr_val(STRING, row, offset, (void *)"  ( ", 0);
-  offset = add_scr_val(DATE, row, offset, NULL, 0);
-  offset = add_scr_val(STRING, row, offset, (void *)" --- ", 0);
-  offset = add_scr_val(DATE, row, offset, NULL, 1);
-  offset = add_scr_val(STRING, row++, offset, (void *)" )", 0);
-  add_scr_val(R_CHAR, row++, 0, (void *)'-', COLS);
+  offset = add_disp_val(outp, STRING, row, offset, (void *)"Miner State", 0);
+  offset = add_disp_val(outp, STRING, row, offset, (void *)"  ( ", 0);
+  offset = add_disp_val(outp, DATE, row, offset, NULL, 0);
+  offset = add_disp_val(outp, STRING, row, offset, (void *)" --- ", 0);
+  offset = add_disp_val(outp, DATE, row, offset, NULL, 1);
+  offset = add_disp_val(outp, STRING, row++, offset, (void *)" )", 0);
+  add_disp_val(outp, R_CHAR, row++, 0, (void *)'-', COLS);
 
   /* System | WIFI: OK | CFG: OK | PID: KO  TARGET: 00  PWM: 28/28 | MQTT: OK */
   offset = 0;
-  offset = add_scr_val(STRING, row, offset, (void *)" System | WIFI: ", 0);
-  offset = add_scr_val(OK_KO, row, offset, &sys_stat.flags, SYS_WIFI_CONN_BIT);
-  offset = add_scr_val(STRING, row, offset, (void *)" | CFG: ", 0);
-  offset = add_scr_val(OK_KO, row, offset, &sys_stat.flags, SYS_CFG_LOAD_BIT);
-  offset = add_scr_val(STRING, row, offset, (void *)" | PID: ", 0);
-  offset = add_scr_val(OK_KO, row, offset, &sys_stat.flags, SYS_PWM_PID_BIT);
-  offset = add_scr_val(STRING, row, offset, (void *)"  TARGET: ", 0);
-  offset = add_scr_val(INT, row, offset, &pid_set_point, 2);
-  offset = add_scr_val(STRING, row, offset, (void *)"  PWM: ", 0);
-  offset = add_scr_val(INT, row, offset, &sys_stat.pwm[0], 2);
-  offset = add_scr_val(R_CHAR, row, offset, (void *)'/', 1);
-  offset = add_scr_val(INT, row, offset, &sys_stat.pwm[1], 2);
-  offset = add_scr_val(STRING, row, offset, (void *)" | MQTT: ", 0);
-  add_scr_val(OK_KO, row++, offset, &sys_stat.flags, SYS_MQTT_CONN_BIT);
+  offset = add_disp_val(outp, STRING, row, offset, (void *)" System | WIFI: ", 0);
+  offset = add_disp_val(outp, OK_KO, row, offset, &sys_stat.flags, SYS_WIFI_CONN_BIT);
+  offset = add_disp_val(outp, STRING, row, offset, (void *)" | CFG: ", 0);
+  offset = add_disp_val(outp, OK_KO, row, offset, &sys_stat.flags, SYS_CFG_LOAD_BIT);
+  offset = add_disp_val(outp, STRING, row, offset, (void *)" | PID: ", 0);
+  offset = add_disp_val(outp, OK_KO, row, offset, &sys_stat.flags, SYS_PWM_PID_BIT);
+  offset = add_disp_val(outp, STRING, row, offset, (void *)"  TARGET: ", 0);
+  offset = add_disp_val(outp, INT, row, offset, &pid_set_point, 2);
+  offset = add_disp_val(outp, STRING, row, offset, (void *)"  PWM: ", 0);
+  offset = add_disp_val(outp, INT, row, offset, &sys_stat.pwm[0], 2);
+  offset = add_disp_val(outp, R_CHAR, row, offset, (void *)'/', 1);
+  offset = add_disp_val(outp, INT, row, offset, &sys_stat.pwm[1], 2);
+  offset = add_disp_val(outp, STRING, row, offset, (void *)" | MQTT: ", 0);
+  add_disp_val(outp, OK_KO, row++, offset, &sys_stat.flags, SYS_MQTT_CONN_BIT);
 
   /* WIFI   | SSID: xxxx@xx:xx:xx:xx:xx:xx | IP: 192.168.2.100 | RSSI: -55 */
   offset = 0;
-  offset = add_scr_val(STRING, row, offset, (void *)" WIFI   | SSID: ", 0);
-  offset = add_scr_val(STRING, row, offset, (void *)sys_cfg.ssid.c_str(), 0);
-  offset = add_scr_val(R_CHAR, row, offset, (void *)'@', 1);
-  offset = add_scr_val(MACADR, row, offset, (void *)sys_stat.bssid, 0);
-  offset = add_scr_val(STRING, row, offset, (void *)" | IP: ", 0);
-  offset = add_scr_val(IPADDR, row, offset, (void *)&sys_stat.localip, 0);
-  offset = add_scr_val(STRING, row, offset, (void *)" | RSSI: ", 0);
-  add_scr_val(INT, row++, offset, &sys_stat.rssi, 3);
+  offset = add_disp_val(outp, STRING, row, offset, (void *)" WIFI   | SSID: ", 0);
+  offset = add_disp_val(outp, STRING, row, offset, (void *)sys_cfg.ssid.c_str(), 0);
+  offset = add_disp_val(outp, R_CHAR, row, offset, (void *)'@', 1);
+  offset = add_disp_val(outp, MACADR, row, offset, (void *)sys_stat.bssid, 0);
+  offset = add_disp_val(outp, STRING, row, offset, (void *)" | IP: ", 0);
+  offset = add_disp_val(outp, IPADDR, row, offset, (void *)&sys_stat.localip, 0);
+  offset = add_disp_val(outp, STRING, row, offset, (void *)" | RSSI: ", 0);
+  add_disp_val(outp, INT, row++, offset, &sys_stat.rssi, 3);
 
   /* Sensor | Inlet: 18.37c | Water: 31.31c | Outlet: 31.56c | Delta: 12.94c */
   if (sys_cfg.sensors_enabled) {
     offset = 0;
-    offset = add_scr_val(STRING, row, offset, (void *)" Sensor | Inlet: ", 0);
-    offset = add_scr_val(FLOAT, row, offset, &sys_stat.temp[2], 5);
-    offset = add_scr_val(STRING, row, offset, (void *)"c | Water: ", 0);
-    offset = add_scr_val(FLOAT, row, offset, &sys_stat.temp[0], 5);
-    offset = add_scr_val(STRING, row, offset, (void *)"c | Outlet: ", 0);
-    offset = add_scr_val(FLOAT, row, offset, &sys_stat.temp[1], 5);
-    offset = add_scr_val(STRING, row, offset, (void *)"c | Delta: ", 0);
-    add_scr_val(FLOAT_DELTA, row++, offset, &sys_stat.temp[0], 5);
+    offset = add_disp_val(outp, STRING, row, offset, (void *)" Sensor | Inlet: ", 0);
+    offset = add_disp_val(outp, FLOAT, row, offset, &sys_stat.temp[2], 5);
+    offset = add_disp_val(outp, STRING, row, offset, (void *)"c | Water: ", 0);
+    offset = add_disp_val(outp, FLOAT, row, offset, &sys_stat.temp[0], 5);
+    offset = add_disp_val(outp, STRING, row, offset, (void *)"c | Outlet: ", 0);
+    offset = add_disp_val(outp, FLOAT, row, offset, &sys_stat.temp[1], 5);
+    offset = add_disp_val(outp, STRING, row, offset, (void *)"c | Delta: ", 0);
+    add_disp_val(outp, FLOAT_DELTA, row++, offset, &sys_stat.temp[0], 5);
   }
 
   /* Fan0   | 4095 | 4125 | 3855 | 5970 | 5820 | 5775 | 5835 | 1065 | 5745 | 0000 */
@@ -1101,10 +1081,10 @@ void setup_screen() {
     for (i = 0; i < sys_cfg.ttp_num; i++) {
       sprintf(c_str = strdup(" Fan0  "), " Fan%d  ", i);
       offset = 0;
-      offset = add_scr_val(STRING, row, offset, c_str, 0);
+      offset = add_disp_val(outp, STRING, row, offset, c_str, 0);
       for (j = 0; j < TTP_PINS - 1; j++, col += 7) {
-        offset = add_scr_val(STRING, row, offset, (void *)" | ", 0);
-        offset = add_scr_val(INT, row, offset, &sys_stat.rpm[i][j], 4);
+        offset = add_disp_val(outp, STRING, row, offset, (void *)" | ", 0);
+        offset = add_disp_val(outp, INT, row, offset, &sys_stat.rpm[i][j], 4);
       }
       row++;
     }
@@ -1114,86 +1094,85 @@ void setup_screen() {
   for (i = 0; i < sys_cfg.miners_num; i++) {
     sprintf(c_str = strdup(" Miner0 | "), " Miner%d | ", i);
     offset = 0;
-    offset = add_scr_val(STRING, row, offset, c_str, 0);
-    offset = add_scr_val(INT, row, offset, &(miners_s[i].gpu_num), 1);
-    offset = add_scr_val(STRING, row, offset, (void *)" | ", 0);
-    offset = add_scr_val(ON_OFF, row, offset, &(miners_s[i].gpu_num), 1);
-    offset = add_scr_val(STRING, row, offset, (void *)" | ", 0);
-    offset = add_scr_val(INT, row, offset, &(miners_s[i].t_hash), 3);
-    offset = add_scr_val(STRING, row, offset, (void *)"MH/s | ", 0);
-    offset = add_scr_val(FLOAT, row, offset, &(miners_s[i].t_temp), 5);
-    offset = add_scr_val(STRING, row, offset, (void *)"c | ", 0);
-    offset = add_scr_val(TIME_SPAN, row, offset, &(miners_s[i].uptime), 0);
-    offset = add_scr_val(STRING, row, offset, (void *)" | A/R/I: ", 0);
-    add_scr_val(SHARE_STATE, row, offset, &(miners_s[i].t_accepted_s), 0);
+    offset = add_disp_val(outp, STRING, row, offset, c_str, 0);
+    offset = add_disp_val(outp, INT, row, offset, &(miners_s[i].gpu_num), 1);
+    offset = add_disp_val(outp, STRING, row, offset, (void *)" | ", 0);
+    offset = add_disp_val(outp, ON_OFF, row, offset, &(miners_s[i].gpu_num), 1);
+    offset = add_disp_val(outp, STRING, row, offset, (void *)" | ", 0);
+    offset = add_disp_val(outp, INT, row, offset, &(miners_s[i].t_hash), 3);
+    offset = add_disp_val(outp, STRING, row, offset, (void *)"MH/s | ", 0);
+    offset = add_disp_val(outp, FLOAT, row, offset, &(miners_s[i].t_temp), 5);
+    offset = add_disp_val(outp, STRING, row, offset, (void *)"c | ", 0);
+    offset = add_disp_val(outp, TIME_SPAN, row, offset, &(miners_s[i].uptime), 0);
+    offset = add_disp_val(outp, STRING, row, offset, (void *)" | A/R/I: ", 0);
+    add_disp_val(outp, SHARE_STATE, row, offset, &(miners_s[i].t_accepted_s), 0);
     row++;
   }
 
-  add_scr_val(R_CHAR, row++, 0, (void *)'-', COLS);
-  add_scr_val(R_CHAR, SCREEN_LINES - 2, 0, (void *)'-', COLS);
+  add_disp_val(outp, R_CHAR, row++, 0, (void *)'-', COLS);
+  add_disp_val(outp, R_CHAR, SCREEN_LINES - 2, 0, (void *)'-', COLS);
 
   setscrreg (row, SCREEN_LINES - 3);
-  log_y = SCREEN_LINES - 3;
-  log_x = 0;
 
-  offset = add_scr_val(STRING, SCREEN_LINES - 1, 0, (void *)"CMD: ", 0);
+  offset = add_disp_val(outp, STRING, SCREEN_LINES - 1, 0, (void *)"CMD: ", 0);
   move(SCREEN_LINES - 1, offset);
 
   bitSet(sys_stat.flags, SYS_REDRAW_SCR_BIT);
 }
 
-void update_scr() {
+void update_scr(Disp_outp *outp) {
   int i, n, orig_x, orig_y, changed, redraw, val_i;
   float val_f;
   time_t val_t;
   uint32_t val_u;
+  Disp_val *disp_val = outp->disp_val;
 
   getyx(orig_y, orig_x);
   redraw = SYS_REDRAW_SCR;
   bitClear(sys_stat.flags, SYS_REDRAW_SCR_BIT);
-  for (i = 0; i < cur_last_scr_val; i++) {
+  for (i = 0; i < outp->last_val; i++) {
     String str;
     changed = 0;
-    switch (scr_val[i].type) {
+    switch (disp_val[i].type) {
       case OK_KO:
-        val_i = bitRead(*(int *)(scr_val[i].val1), scr_val[i].val2);
-        if (val_i != scr_val[i].last.val_i || redraw) {
-          scr_val[i].last.val_i = val_i;
+        val_i = bitRead(*(int *)(disp_val[i].val1), disp_val[i].val2);
+        if (val_i != disp_val[i].last.val_i || redraw) {
+          disp_val[i].last.val_i = val_i;
           changed = 2;
           str = val_i ? String("OK") : String("KO");
         }
         break;
       case ON_OFF:
-        val_i = *(int *)(scr_val[i].val1);
-        if (val_i != scr_val[i].last.val_i || redraw) {
-          scr_val[i].last.val_i = val_i;
+        val_i = *(int *)(disp_val[i].val1);
+        if (val_i != disp_val[i].last.val_i || redraw) {
+          disp_val[i].last.val_i = val_i;
           changed = 2;
           str = val_i ? String("ONLINE") : String("OFLINE");
         }
         break;
       case FLOAT:
       case FLOAT_DELTA:
-        val_f = *(float *)(scr_val[i].val1) - (scr_val[i].type == FLOAT_DELTA ?
-                                  *((float *)scr_val[i].val1 + 2) : 0);
-        if (val_f != scr_val[i].last.val_f || redraw) {
-          scr_val[i].last.val_f = val_f;
+        val_f = *(float *)(disp_val[i].val1) - (disp_val[i].type == FLOAT_DELTA ?
+                                  *((float *)disp_val[i].val1 + 2) : 0);
+        if (val_f != disp_val[i].last.val_f || redraw) {
+          disp_val[i].last.val_f = val_f;
           changed = 1;
-          str = get_str_float(&val_f, 1, 0, scr_val[i].val2);
+          str = get_str_float(&val_f, 1, 0, disp_val[i].val2);
         }
         break;
       case INT:
-        val_i = *(int *)(scr_val[i].val1);
-        if (val_i != scr_val[i].last.val_i || redraw) {
-          scr_val[i].last.val_i =  val_i;
+        val_i = *(int *)(disp_val[i].val1);
+        if (val_i != disp_val[i].last.val_i || redraw) {
+          disp_val[i].last.val_i =  val_i;
           changed = 1;
-          str = get_str_int(&val_i, 1, 0, scr_val[i].val2);
+          str = get_str_int(&val_i, 1, 0, disp_val[i].val2);
         }
         break;
       case TIME_SPAN:
-        val_i = *(int *)(scr_val[i].val1);
-        if (val_i != scr_val[i].last.val_i || redraw) {
+        val_i = *(int *)(disp_val[i].val1);
+        if (val_i != disp_val[i].last.val_i || redraw) {
           int m, h, d;
-          scr_val[i].last.val_i =  val_i;
+          disp_val[i].last.val_i =  val_i;
           changed = 1;
           m = val_i % 60;
           val_i = val_i / 60;
@@ -1205,11 +1184,11 @@ void update_scr() {
         break;
       case SHARE_STATE:
         int acp, rej, inc;
-        val_i  = acp = *((int *)scr_val[i].val1);
-        val_i += rej = *((int *)scr_val[i].val1 + 1);
-        val_i += inc = *((int *)scr_val[i].val1 + 2);
-        if (val_i != scr_val[i].last.val_i || redraw) {
-          scr_val[i].last.val_i = val_i;
+        val_i  = acp = *((int *)disp_val[i].val1);
+        val_i += rej = *((int *)disp_val[i].val1 + 1);
+        val_i += inc = *((int *)disp_val[i].val1 + 2);
+        if (val_i != disp_val[i].last.val_i || redraw) {
+          disp_val[i].last.val_i = val_i;
           changed = 1;
           str = String(acp) + '/' + String(rej) + '/' + String(inc) + ' ';
           if (val_i) {
@@ -1222,30 +1201,30 @@ void update_scr() {
         break;
       case STRING:
         if (redraw)
-          mvaddstr(scr_val[i].y, scr_val[i].x, (char *)scr_val[i].val1);
+          mvaddstr(disp_val[i].y, disp_val[i].x, (char *)disp_val[i].val1);
         break;
       case R_CHAR:
         if (redraw) {
-          int j = (int)scr_val[i].val1;
+          int j = (int)disp_val[i].val1;
           char ch = (char)j;
-          move(scr_val[i].y, scr_val[i].x);
-          for (j = 0; j < scr_val[i].val2; j++)
+          move(disp_val[i].y, disp_val[i].x);
+          for (j = 0; j < disp_val[i].val2; j++)
             addch(ch);
         }
         break;
       case DATE:
-        val_t = time(NULL) - (scr_val[i].val2 ? 0 : millis() / 1000);
-        if (val_t != scr_val[i].last.val_t || redraw) {
-          scr_val[i].last.val_t = val_t;
+        val_t = time(NULL) - (disp_val[i].val2 ? 0 : millis() / 1000);
+        if (val_t != disp_val[i].last.val_t || redraw) {
+          disp_val[i].last.val_t = val_t;
           str = ctime(&val_t);
           changed = 2;
         }
         break;
       case MACADR:
-        val_u = BKDRHash((uint8_t *)scr_val[i].val1, 6);
-        if (val_u != scr_val[i].last.val_u || redraw) {
-          uint8_t *bssid = (uint8_t *)scr_val[i].val1;
-          scr_val[i].last.val_u = val_u;
+        val_u = BKDRHash((uint8_t *)disp_val[i].val1, 6);
+        if (val_u != disp_val[i].last.val_u || redraw) {
+          uint8_t *bssid = (uint8_t *)disp_val[i].val1;
+          disp_val[i].last.val_u = val_u;
           changed = 1;
           str = String(String(bssid[0], HEX) + ":" + String(bssid[1], HEX) + ":"
                      + String(bssid[2], HEX) + ":" + String(bssid[3], HEX) + ":"
@@ -1253,9 +1232,9 @@ void update_scr() {
         }
         break;
       case IPADDR:
-        val_u = *(uint32_t *)(scr_val[i].val1);
-        if (val_u != scr_val[i].last.val_u || redraw) {
-          scr_val[i].last.val_u = val_u;
+        val_u = *(uint32_t *)(disp_val[i].val1);
+        if (val_u != disp_val[i].last.val_u || redraw) {
+          disp_val[i].last.val_u = val_u;
           changed = 1;
           str = IPAddress(val_u).toString();
         }
@@ -1264,17 +1243,88 @@ void update_scr() {
         break;
     }
     if (changed) {
-      mvaddstr(scr_val[i].y, scr_val[i].x, str.c_str());
-      if (scr_val[i].val2 > str.length() && changed == 1) {
-        for (n = 0; n < scr_val[i].val2 - str.length(); n++)
-          mvaddch(scr_val[i].y, scr_val[i].x + str.length() + n, ' ');
+      mvaddstr(disp_val[i].y, disp_val[i].x, str.c_str());
+      if (disp_val[i].val2 > str.length() && changed == 1) {
+        for (n = 0; n < disp_val[i].val2 - str.length(); n++)
+          mvaddch(disp_val[i].y, disp_val[i].x + str.length() + n, ' ');
       }
     }
   }
 
   move(orig_y, orig_x);
 }
-#endif
+
+void init_u8g2(Disp_outp *outp) {
+  if (outp == NULL || outp->type != ST7920_128X64)
+    return;
+
+  u8g2.setBusClock(500000);
+  u8g2.begin();
+}
+
+void update_u8g2(Disp_outp *outp) {
+  #if 0
+  u8g2.firstPage();
+  do {
+    u8g2.setFont(TEMP_FONT);
+    u8g2.drawStr(0, 13, get_str_float(sys_stat.temp, 3, 0, 5).c_str());
+    u8g2.setFont(RPM_FONT);
+    u8g2.drawStr(0, 23, get_str_int(sys_stat.rpm[curr_tacho_pwm], 5, 0, 4).c_str());
+    u8g2.setFont(RPM_FONT);
+    u8g2.drawStr(0, 32, get_str_int(sys_stat.rpm[curr_tacho_pwm], 5, 5, 4).c_str());
+    u8g2.setFont(VOLT_AMP_FONT);
+    u8g2.drawStr(114, 23, get_str_int(&volt, 1, 0, 3).c_str());
+    u8g2.setFont(VOLT_AMP_FONT);
+    u8g2.drawStr(114, 32, get_str_int(&amp, 1, 0, 3).c_str());
+  } while ( u8g2.nextPage() );
+  #else
+  int i;
+  String str;
+
+  u8g2.clearBuffer();
+  u8g2.setFont(TEMP_FONT);
+  u8g2.drawStr(0, 13, get_str_float(sys_stat.temp, 3, 0, 5).c_str());
+  u8g2.setFont(MINER_FONT);
+  str = String(miners_s[0].t_hash / 1000) + "m "
+        + miners_s[0].t_dhash / 1000 + "m "
+        + (int)miners_s[0].t_temp + "c "
+        + (miners_s[0].gpu_num ? miners_s[0].uptime : miners_s[0].offtime) / 60
+        + "h " + sys_stat.freeheap + " " + sys_stat.rpm[0][4];
+  u8g2.drawStr(0, 23, str.c_str());
+  str = String();
+  for (i = 1; i < sys_cfg.miners_num; i++)
+    if (miners[i].enabled)
+      str += String(miners_s[i].t_hash) + "m " + (int)miners_s[i].t_temp + "c "
+          + (miners_s[i].gpu_num ? miners_s[i].uptime : miners_s[i].offtime) / 60
+          + "h ";
+  u8g2.drawStr(0, 32, str.c_str());
+  /*
+  u8g2.setFont(RPM_FONT);
+  u8g2.drawStr(0, 23, get_str_int(sys_stat.rpm[curr_tacho_pwm], 5, 0, 4).c_str());
+  u8g2.setFont(RPM_FONT);
+  u8g2.drawStr(0, 32, get_str_int(sys_stat.rpm[curr_tacho_pwm], 5, 5, 4).c_str());
+  u8g2.setFont(VOLT_AMP_FONT);
+  u8g2.drawStr(114, 23, get_str_int(&volt, 1, 0, 3).c_str());
+  u8g2.setFont(VOLT_AMP_FONT);
+  u8g2.drawStr(114, 32, get_str_int(&amp, 1, 0, 3).c_str());
+  */
+  u8g2.sendBuffer();
+  #endif
+}
+
+void init_display() {
+  int i;
+
+  for (i = 0; i < sys_cfg.display_num; i++)
+    sys_cfg.display_output[i].init(&sys_cfg.display_output[i]);
+}
+
+void update_display() {
+  int i;
+
+  for (i = 0; i < sys_cfg.display_num; i++)
+    sys_cfg.display_output[i].render(&sys_cfg.display_output[i]);
+}
 
 String getContentType(String filename){
   if(ws.hasArg("download")) return "application/octet-stream";
