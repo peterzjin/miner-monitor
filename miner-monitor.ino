@@ -320,7 +320,7 @@ void setup() {
     sys_cfg.display_enabled = json_display["ENABLED"].as<bool>();
     JsonArray json_do = json_display["OUTPUT"];
     for (i = 0; i < json_do.size(); i++) {
-      if (json_do[i].as<int>() > MAX_PANEL_TYPE)
+      if (json_do[i].as<int>() >= MAX_PANEL_TYPE)
         continue;
 
       sys_cfg.display_num++;
