@@ -975,20 +975,17 @@ void scr_log(Disp_outp *outp, const char *str) {
 
   getyx(orig_y, orig_x);
 
-  if (vlog->x == 0) {
-    String prefix = String(" [") + millis() + "] ";
-    scroll();
-    mvaddstr(vlog->y, vlog->x, prefix.c_str());
-    vlog->x += prefix.length();
-  }
-
   while (ch = *(str++)) {
+    if (vlog->x == 0) {
+      String prefix = String(" [") + millis() + "] ";
+      scroll();
+      mvaddstr(vlog->y, vlog->x, prefix.c_str());
+      vlog->x = prefix.length();
+    }
     if (ch == '\r') {
       continue;
     } else if (ch == '\n') {
       vlog->x = 0;
-      scr_log(outp, str);
-      break;
     } else {
       mvaddch(vlog->y, vlog->x++, ch);
     }
