@@ -211,19 +211,21 @@ typedef struct {
 } Sys_stat;
 Sys_stat sys_stat;
 
-#define SYS_CFG_LOAD_BIT    0
-#define SYS_WIFI_CONN_BIT   1
-#define SYS_PWM_PID_BIT     2
-#define SYS_MQTT_CONN_BIT   3
-#define SYS_REDRAW_SCR_BIT  4
-#define SYS_NEED_RESET_BIT  5
-#define SYS_NEED_BOOT_BIT   6
-#define SYS_WIFI_CONNECTED  bitRead(sys_stat.flags, SYS_WIFI_CONN_BIT)
-#define SYS_CFG_LOADED      bitRead(sys_stat.flags, SYS_CFG_LOAD_BIT)
-#define SYS_PWM_PID_EN      bitRead(sys_stat.flags, SYS_PWM_PID_BIT)
-#define SYS_REDRAW_SCR      bitRead(sys_stat.flags, SYS_REDRAW_SCR_BIT)
-#define SYS_NEED_RESET      bitRead(sys_stat.flags, SYS_NEED_RESET_BIT)
-#define SYS_NEED_BOOT       bitRead(sys_stat.flags, SYS_NEED_BOOT_BIT)
+#define SYS_CFG_LOAD_BIT     0
+#define SYS_WIFI_CONN_BIT    1
+#define SYS_WIFI_CONI_BIT    2
+#define SYS_PWM_PID_BIT      3
+#define SYS_MQTT_CONN_BIT    4
+#define SYS_REDRAW_SCR_BIT   5
+#define SYS_NEED_RESET_BIT   6
+#define SYS_NEED_BOOT_BIT    7
+#define SYS_WIFI_CONNECTED   bitRead(sys_stat.flags, SYS_WIFI_CONN_BIT)
+#define SYS_WIFI_CONNECTING  bitRead(sys_stat.flags, SYS_WIFI_CONI_BIT)
+#define SYS_CFG_LOADED       bitRead(sys_stat.flags, SYS_CFG_LOAD_BIT)
+#define SYS_PWM_PID_EN       bitRead(sys_stat.flags, SYS_PWM_PID_BIT)
+#define SYS_REDRAW_SCR       bitRead(sys_stat.flags, SYS_REDRAW_SCR_BIT)
+#define SYS_NEED_RESET       bitRead(sys_stat.flags, SYS_NEED_RESET_BIT)
+#define SYS_NEED_BOOT        bitRead(sys_stat.flags, SYS_NEED_BOOT_BIT)
 
 #define MAX_PWM_VAL 69
 #define MIN_PWM_VAL 16
@@ -489,28 +491,30 @@ void update_wifi_status() {
   if (!SYS_CFG_LOADED)
     return;
 
-  if (WiFi.status() != WL_CONNECTED) {
+  int wifi_status = SYS_WIFI_CONNECTING ? WiFi.waitForConnectResult(5000) : WiFi.status();
+
+  if (SYS_WIFI_CONNECTED) {
+    if (wifi_status != WL_CONNECTED) {
+      bitClear(sys_stat.flags, SYS_WIFI_CONN_BIT);
+      dlog("WiFi " + sys_cfg.ssid + " disconnected ...\r\n");
+    } else {
+      ws.handleClient();
+    }
+  } else if (wifi_status == WL_CONNECTED){
+    ws.begin();
+    sys_stat.rssi = WiFi.RSSI();
+    sys_stat.localip = WiFi.localIP();
+    memcpy(sys_stat.bssid, WiFi.BSSID(), 6);
+    bitSet(sys_stat.flags, SYS_WIFI_CONN_BIT);
+    bitClear(sys_stat.flags, SYS_WIFI_CONI_BIT);
+    dlog("WiFi connected @" + WiFi.localIP().toString() + " (" + WiFi.BSSIDstr() + ")\r\n");
+  } else {
     sys_stat.localip = 0xFFFFFFFF;
     sys_stat.bssid[0] = sys_stat.bssid[1] = sys_stat.bssid[2] = sys_stat.bssid[3]
                       = sys_stat.bssid[4] = sys_stat.bssid[5] = 0xFF;
-    dlog("Connecting to " + sys_cfg.ssid + "...\r\n");
+    bitSet(sys_stat.flags, SYS_WIFI_CONI_BIT);
     WiFi.begin(sys_cfg.ssid.c_str(), sys_cfg.passwd.c_str());
-
-    if (WiFi.waitForConnectResult(5000) != WL_CONNECTED) {
-      bitClear(sys_stat.flags, SYS_WIFI_CONN_BIT);
-      return;
-    }
-
-    bitSet(sys_stat.flags, SYS_WIFI_CONN_BIT);
-    ws.begin();
-
-    dlog("WiFi connected @" + WiFi.localIP().toString() + " (" + WiFi.BSSIDstr() + ")\r\n");
-  } else {
-    memcpy(sys_stat.bssid, WiFi.BSSID(), 6);
-    sys_stat.localip = WiFi.localIP();
-    sys_stat.rssi = WiFi.RSSI();
-    bitSet(sys_stat.flags, SYS_WIFI_CONN_BIT);
-    ws.handleClient();
+    dlog("Connecting to " + sys_cfg.ssid + "...\r\n");
   }
 }
 
