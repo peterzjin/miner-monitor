@@ -31,7 +31,7 @@
 
 #include "FS.h"
 
-#define TTP_PINS 11
+#define TTP_PWM_NUM 2
 #define RPM_MULTI 15
 
 #define TEMP_FONT u8g2_font_crox4t_tn
@@ -126,8 +126,10 @@ enum disp_val_type {
   INT,
   LOG,
   DATE,
+  UINT8,
   FLOAT,
   OK_KO,
+  UINT16,
   ON_OFF,
   R_CHAR,
   STRING,
@@ -188,6 +190,7 @@ typedef struct {
   uint8_t   sensors_pin;
   bool      ttp_enabled;
   uint8_t   ttp_num;
+  uint8_t   ttp_pins;
   uint8_t   *ttp_addr;
   bool      display_enabled;
   int       display_num;
@@ -199,10 +202,16 @@ Sys_cfg sys_cfg;
 
 #define SYS_CFG_FILE_PATH "/sys.cfg"
 
+typedef struct __attribute__((packed)) {
+  uint8_t pwm_val[TTP_PWM_NUM];
+  uint16_t acs712_val;
+  uint32_t interval;
+} Ttp_stat;
+
 typedef struct {
   uint32_t  flags;
-  uint32_t  **rpm;
-  uint32_t  *pwm;
+  Ttp_stat  *ttp_stat;
+  uint16_t  **rpm;
   float     *temp;
   int       freeheap;
   uint8_t   bssid[6];
@@ -308,14 +317,16 @@ void setup() {
     sys_cfg.ttp_enabled = json_ttp["ENABLED"].as<bool>();
     JsonArray json_ta = json_ttp["ADDR"];
     sys_cfg.ttp_num = json_ta.size();
-    if (sys_cfg.ttp_num > 0) {
+    if (sys_cfg.ttp_enabled && sys_cfg.ttp_num > 0) {
+      sys_cfg.ttp_pins = json_ttp["PINS"].as<uint8_t>();
       sys_cfg.ttp_addr = (uint8_t *)malloc(sys_cfg.ttp_num * sizeof(uint8_t));
-      sys_stat.rpm = (uint32_t **)malloc(sys_cfg.ttp_num * sizeof(uint32_t *));
-      sys_stat.pwm = (uint32_t *)malloc(sys_cfg.ttp_num * sizeof(uint32_t));
+      sys_stat.rpm = (uint16_t **)malloc((sys_cfg.ttp_num + 1) * sizeof(uint16_t *));
       for (i = 0; i < sys_cfg.ttp_num; i++) {
         sys_cfg.ttp_addr[i] = json_ta[i].as<uint8_t>();
-        sys_stat.rpm[i] = (uint32_t *)malloc((TTP_PINS - 1) * sizeof(uint32_t));
+        sys_stat.rpm[i] = (uint16_t *)malloc((sys_cfg.ttp_pins) * sizeof(uint16_t));
       }
+      sys_stat.rpm[i] = (uint16_t *)malloc((sys_cfg.ttp_pins) * sizeof(uint16_t));
+      sys_stat.ttp_stat = (Ttp_stat *)malloc(sys_cfg.ttp_num * sizeof(Ttp_stat));
     }
 
     JsonObject json_display = cfg["DISPLAY"];
@@ -436,10 +447,10 @@ void loop() {
     char s_val = 0;
 
     s_val = Serial.read();
-    //dlog((int)s_val);
+    //dlog(String("Input Char Value: ") + (int)s_val + "\r\n");
     if (s_val >= 48 && s_val <= 57) {
       next_pwm_val = 10 * next_pwm_val + s_val - 48;
-    } else if (s_val == 127 /* Backspace */) {
+    } else if (s_val == 8 /* Backspace */) {
       next_pwm_val = next_pwm_val / 10;
     } else if (s_val == 13 /* Enter */) {
       need_set_pwm = true;
@@ -464,24 +475,13 @@ void loop() {
     if (pwm_pid.Compute()) {
       dlog(String("Current PID input is ") + pid_input
                 + ", PID output is " + pid_output + "\r\n");
-      next_pwm_val = (int)(0.5 + sys_stat.pwm[0] - pid_output);
+      next_pwm_val = (int)(0.5 + sys_stat.ttp_stat[0].pwm_val[0] - pid_output);
       need_set_pwm = true;
     }
   }
 
   if (sys_cfg.ttp_enabled && need_set_pwm) {
-    next_pwm_val = next_pwm_val > MAX_PWM_VAL ? MAX_PWM_VAL :
-                  (next_pwm_val < MIN_PWM_VAL ? MIN_PWM_VAL : next_pwm_val);
-    dlog(String("Get PWM value: ") + next_pwm_val + "\r\n");
-
-    if (next_pwm_val != sys_stat.pwm[0]) {
-      int i;
-      for (i = 0; i < sys_cfg.ttp_num; i++) {
-        Wire.beginTransmission(sys_cfg.ttp_addr[i]);
-        Wire.write(next_pwm_val);
-        Wire.endTransmission();
-      }
-    }
+    pwm2ttp(next_pwm_val);
     next_pwm_val = 0;
   }
 }
@@ -540,26 +540,26 @@ void update_temp() {
 
 /* The task to get the tacho and pwm values from tachometers */
 void update_tacho_pwm() {
-  int i, j;
-  unsigned char val_h, val_l;
+  int i, j, ret, req;
 
   if (!sys_cfg.ttp_enabled)
     return;
 
+  req = sizeof(Ttp_stat) + sys_cfg.ttp_pins * sizeof(uint16_t);
   for (i = 0; i < sys_cfg.ttp_num; i++) {
-    j = 0;
-    Wire.requestFrom(sys_cfg.ttp_addr[i], (uint8_t)(TTP_PINS * 2 + 1));
-    while (Wire.available()) {
-      if (j == TTP_PINS) {
-        sys_stat.pwm[i] = Wire.read();
-        //dlog(String(sys_stat.pwm[i]) + "\r\n");
-      } else {
-        val_l = Wire.read();
-        val_h = Wire.read();
-        sys_stat.rpm[i][j] = ((val_h << 8) + val_l) * RPM_MULTI;
-        //dlog(String(sys_stat.rpm[i][j]) + " ");
-        j++;
-      }
+    ret = Wire.requestFrom(sys_cfg.ttp_addr[i], (uint8_t)req);
+    if (ret != req) {
+      dlog(String("TTP@") + sys_cfg.ttp_addr[i] + ": response size(" + ret
+                  + ") not match " + req + "\r\n");
+      return;
+    }
+
+    Wire.readBytes((uint8_t *)sys_stat.rpm[sys_cfg.ttp_num],
+                    sys_cfg.ttp_pins * sizeof(uint16_t));
+    Wire.readBytes((uint8_t *)&sys_stat.ttp_stat[i], sizeof(Ttp_stat));
+    for (j = 0; j < sys_cfg.ttp_pins; j++) {
+      sys_stat.rpm[i][j] = (uint32_t)sys_stat.rpm[sys_cfg.ttp_num][j]
+                            * RPM_MULTI * 1000 / sys_stat.ttp_stat[i].interval;
     }
   }
 }
@@ -713,7 +713,7 @@ void update_state_json() {
   root["pwms"] = sys_cfg.ttp_num;
   JsonArray pwm = root.createNestedArray("pwm");
   for (i = 0; i < sys_cfg.ttp_num; i++)
-    pwm.add(sys_stat.pwm[i]);
+    pwm.add(sys_stat.ttp_stat[i].pwm_val[0]);
 
   root["miners"] = sys_cfg.miners_num;
   JsonArray m_gpus = root.createNestedArray("m_gpus");
@@ -821,6 +821,49 @@ void _update_temp() {
            + " D: " + (sys_stat.temp[0] - sys_stat.temp[2]) + "\r\n");
 }
 
+void pwm2ttp(int next_pwm) {
+/*
+  32      :   all pwm set to 32;
+  n32     :   pwm[n - 1] of all ttp set to 32;
+  m032    :   all pwm of ttp[m - 1] set to 32;
+  mn32    :   pwm[n - 1] of ttp[m - 1] set to 32;
+*/
+  uint8_t pwm, m, n, i, j;
+  Ttp_stat ttp_stat;
+
+  m = next_pwm / 1000;
+  n = (next_pwm - m * 1000) / 100;
+  pwm = next_pwm - (m * 1000 + n * 100);
+
+  //dlog(String("Parse PWM: ") + next_pwm + " --> " + m + " " + n + " " + pwm + "\r\n");
+
+  if (pwm < MIN_PWM_VAL || pwm > MAX_PWM_VAL || m > sys_cfg.ttp_num || n > TTP_PWM_NUM) {
+    dlog(String("Invalid PWM value: ") + next_pwm + "\r\n");
+    return;
+  }
+
+  for (i = 0; i < sys_cfg.ttp_num; i++) {
+    if (m == 0 || m == (i + 1)) {
+      memcpy(&ttp_stat, &sys_stat.ttp_stat[i], sizeof(Ttp_stat));
+      for (j = 0; j < TTP_PWM_NUM; j++) {
+        if (n == 0 || n == (j + 1)) {
+          ttp_stat.pwm_val[j] = pwm;
+        }
+      }
+      Wire.beginTransmission(sys_cfg.ttp_addr[i]);
+      Wire.write((byte *)&ttp_stat, sizeof(Ttp_stat));
+      Wire.endTransmission();
+    }
+  }
+
+  /*
+  dlog(String("New PWM: ") + sys_stat.ttp_stat[0].pwm_val[0] + " "
+              + sys_stat.ttp_stat[0].pwm_val[1] + " "
+              + sys_stat.ttp_stat[1].pwm_val[0] + " "
+              + sys_stat.ttp_stat[1].pwm_val[1] + "\r\n");
+  */
+}
+
 byte add_disp_val(Disp_outp *outp, enum disp_val_type type,
                   byte y, byte x, void* val1, int val2) {
   if (outp->last_val >= MAX_SCR_VAL)
@@ -834,7 +877,9 @@ byte add_disp_val(Disp_outp *outp, enum disp_val_type type,
 
   switch (type) {
     case INT:
+    case UINT8:
     case FLOAT:
+    case UINT16:
     case R_CHAR:
     case FLOAT_DELTA:
       x += val2;
@@ -1005,6 +1050,7 @@ void scr_log(Disp_outp *outp, const char *str) {
  WIFI   | SSID: xxxx@xx:xx:xx:xx:xx:xx | IP: 192.168.2.100 | RSSI: -55
  Sensor | Inlet: 18.37c | Water: 31.31c | Outlet: 31.56c | Delta: 12.94c
  Fan0   | 4095 | 4125 | 3855 | 5970 | 5820 | 5775 | 5835 | 1065 | 5745 | 0000
+ TTP    | 28/38 404 | 28/38 434
  Miner0 | 6 | ONLINE | 170MH/s | 36.33c | 00D23H13M | A/R/I: 3312/1/0 99.00%
 --------------------------------------------------------------------------------
 ... ...
@@ -1047,9 +1093,9 @@ void init_scr(Disp_outp *outp) {
   offset = add_disp_val(outp, STRING, row, offset, (void *)"  TARGET: ", 0);
   offset = add_disp_val(outp, INT, row, offset, &pid_set_point, 2);
   offset = add_disp_val(outp, STRING, row, offset, (void *)"  PWM: ", 0);
-  offset = add_disp_val(outp, INT, row, offset, &sys_stat.pwm[0], 2);
+  offset = add_disp_val(outp, UINT8, row, offset, &sys_stat.ttp_stat[0].pwm_val[0], 2);
   offset = add_disp_val(outp, R_CHAR, row, offset, (void *)'/', 1);
-  offset = add_disp_val(outp, INT, row, offset, &sys_stat.pwm[1], 2);
+  offset = add_disp_val(outp, UINT8, row, offset, &sys_stat.ttp_stat[1].pwm_val[0], 2);
   offset = add_disp_val(outp, STRING, row, offset, (void *)" | MQTT: ", 0);
   add_disp_val(outp, OK_KO, row++, offset, &sys_stat.flags, SYS_MQTT_CONN_BIT);
 
@@ -1083,12 +1129,30 @@ void init_scr(Disp_outp *outp) {
       sprintf(c_str = strdup(" Fan0  "), " Fan%d  ", i);
       offset = 0;
       offset = add_disp_val(outp, STRING, row, offset, c_str, 0);
-      for (j = 0; j < TTP_PINS - 1; j++, col += 7) {
+      for (j = 0; j < sys_cfg.ttp_pins - 1; j++, col += 7) {
         offset = add_disp_val(outp, STRING, row, offset, (void *)" | ", 0);
-        offset = add_disp_val(outp, INT, row, offset, &sys_stat.rpm[i][j], 4);
+        offset = add_disp_val(outp, UINT16, row, offset, &sys_stat.rpm[i][j], 4);
       }
       row++;
     }
+  }
+
+  /* TTP    | 28/38 404 | 28/38 434 */
+  if (sys_cfg.ttp_enabled) {
+    offset = 0;
+    offset = add_disp_val(outp, STRING, row, offset, (void *)" TTP   ", 0);
+    for (i = 0; i < sys_cfg.ttp_num; i++) {
+      offset = add_disp_val(outp, STRING, row, offset, (void *)" | ", 0);
+      offset = add_disp_val(outp, UINT8, row, offset,
+                            &sys_stat.ttp_stat[i].pwm_val[0], 2);
+      offset = add_disp_val(outp, R_CHAR, row, offset, (void *)'/', 1);
+      offset = add_disp_val(outp, UINT8, row, offset,
+                            &sys_stat.ttp_stat[i].pwm_val[1], 2);
+      offset = add_disp_val(outp, R_CHAR, row, offset, (void *)' ', 1);
+      offset = add_disp_val(outp, UINT16, row, offset,
+                            &sys_stat.ttp_stat[i].acs712_val, 3);
+    }
+    row++;
   }
 
   /* Miner0 | 6 | ONLINE | 170MH/s | 36.33c | 00D23H13M | A/R/I: 3312/1/0 99.00% */
@@ -1162,7 +1226,14 @@ void update_scr(Disp_outp *outp) {
         }
         break;
       case INT:
-        val_i = *(int *)(disp_val[i].val1);
+      case UINT8:
+      case UINT16:
+        if (disp_val[i].type == INT)
+          val_i = *(int *)(disp_val[i].val1);
+        else if (disp_val[i].type == UINT8)
+          val_i = *(uint8_t *)(disp_val[i].val1);
+        else
+          val_i = *(uint16_t *)(disp_val[i].val1);
         if (val_i != disp_val[i].last.val_i || redraw) {
           disp_val[i].last.val_i =  val_i;
           changed = 1;

@@ -19,6 +19,7 @@ The sys.cfg should be something like:
 				},
 	"TTP"		:	{
 					"ENABLED"	:	x,
+					"PINS"		:	x,
 					"ADDR"		:	[x, y]
 				},
 	"DISPLAY"	:	{
