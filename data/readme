@@ -20,6 +20,8 @@ The sys.cfg should be something like:
 	"TTP"		:	{
 					"ENABLED"	:	x,
 					"PINS"		:	x,
+					"VCC"		:	5.00,
+					"0A_VAL"	:	512,
 					"ADDR"		:	[x, y]
 				},
 	"DISPLAY"	:	{
