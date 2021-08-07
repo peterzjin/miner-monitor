@@ -714,15 +714,19 @@ void update_state_json() {
   int i, j, gpus = 0;
   DynamicJsonDocument root(2048);
 
-  root["temp_sensors"] = sys_cfg.sensors_num;
-  JsonArray s_temp = root.createNestedArray("s_temp");
-  for (i = 0; i < sys_cfg.sensors_num; i++)
-    s_temp.add(sys_stat.temp[i]);
+  if (sys_cfg.sensors_enabled) {
+    root["temp_sensors"] = sys_cfg.sensors_num;
+    JsonArray s_temp = root.createNestedArray("s_temp");
+    for (i = 0; i < sys_cfg.sensors_num; i++)
+      s_temp.add(sys_stat.temp[i]);
+  }
 
-  root["pwms"] = sys_cfg.ttp_num;
-  JsonArray pwm = root.createNestedArray("pwm");
-  for (i = 0; i < sys_cfg.ttp_num; i++)
-    pwm.add(sys_stat.ttp_stat[i].pwm_val[0]);
+  if (sys_cfg.ttp_enabled) {
+    root["pwms"] = sys_cfg.ttp_num;
+    JsonArray pwm = root.createNestedArray("pwm");
+    for (i = 0; i < sys_cfg.ttp_num; i++)
+      pwm.add(sys_stat.ttp_stat[i].pwm_val[0]);
+  }
 
   root["miners"] = sys_cfg.miners_num;
   JsonArray m_gpus = root.createNestedArray("m_gpus");
@@ -1263,17 +1267,21 @@ void init_scr(Disp_outp *outp) {
   offset = add_disp_val(outp, OK_KO, row, offset, &sys_stat.flags, SYS_PWM_PID_BIT);
   offset = add_disp_val(outp, R_CHAR, row, offset, (void *)'/', 1);
   offset = add_disp_val(outp, INT, row, offset, &pid_set_point, 2);
-  offset = add_disp_val(outp, R_CHAR, row, offset, (void *)'/', 1);
-  offset = add_disp_val(outp, UINT8, row, offset, &sys_stat.ttp_stat[0].pwm_val[0], 2);
-  offset = add_disp_val(outp, R_CHAR, row, offset, (void *)'/', 1);
-  offset = add_disp_val(outp, UINT8, row, offset, &sys_stat.ttp_stat[1].pwm_val[0], 2);
+  if (sys_cfg.ttp_enabled) {
+    for (i = 0; i < sys_cfg.ttp_num; i++) {
+      offset = add_disp_val(outp, R_CHAR, row, offset, (void *)'/', 1);
+      offset = add_disp_val(outp, UINT8, row, offset, &sys_stat.ttp_stat[i].pwm_val[0], 2);
+    }
+  } else {
+    offset = add_disp_val(outp, STRING, row, offset, (void *)"/NA", 0);
+  }
   offset = add_disp_val(outp, STRING, row, offset, (void *)" | MQTT: ", 0);
   offset = add_disp_val(outp, OK_KO, row, offset, &sys_stat.flags, SYS_MQTT_CONN_BIT);
   offset = add_disp_val(outp, STRING, row, offset, (void *)" | FLR: ", 0);
   if (sys_cfg.ttp_enabled)
     offset = add_disp_val(outp, FUNC, row, offset, (void *)&sys_stat.rpm[1][9], (int)conv_flow);
   else
-    offset = add_disp_val(outp, STRING, row, offset, (void *)"NA", 0);
+    offset = add_disp_val(outp, STRING, row, offset, (void *)"NAL", 0);
   add_disp_val(outp, STRING, row++, offset, (void *)"PM", 0);
 
   /* WIFI   | SSID: xxxx@xx:xx:xx:xx:xx:xx | IP: 192.168.2.100 | RSSI: -55 */
