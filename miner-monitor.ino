@@ -802,6 +802,7 @@ void send_mqtt() {
     } else {
       dlog(String("Connected to the MQTT Server ")
                  + sys_cfg.mqtt_server + ':' + sys_cfg.mqtt_port + "\r\n");
+      mqtt_client.setBufferSize(1024);
     }
   }
   bitSet(sys_stat.flags, SYS_MQTT_CONN_BIT);
