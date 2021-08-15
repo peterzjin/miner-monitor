@@ -28,6 +28,8 @@
 #include <mcurses.h>
 #include <time.h>
 #include <sntp.h>
+#include <GxEPD2_BW.h>
+#include <Fonts/FreeMonoBold12pt7b.h>
 
 #include "FS.h"
 
@@ -48,6 +50,7 @@ PCF857x pcf8574(0x27, &Wire);
 U8G2 u8g2;
 U8G2_ST7920_128X64_F_HW_SPI u8g2_st7920(U8G2_R0, D8);
 U8G2_SSD1322_NHD_256X64_F_4W_HW_SPI u8g2_ssd1322(U8G2_R2, D8, D4);
+GxEPD2_BW<GxEPD2_213, GxEPD2_213::HEIGHT> epd(GxEPD2_213(/*CS*/D8, /*DC*/D2, /*RST*/D1, /*BUSY*/D0));
 
 typedef void (*timer_cb)();
 typedef struct {
@@ -119,15 +122,26 @@ Miner_s *miners_s;
 
 #define SCREEN_LINES 60
 #define MAX_SCR_VAL 160
+#define EPD_PRE_Y 2
+#define EPD_INT_X 4
+#define EPD_INT_Y 4
+#define EPD_PST_Y 2
+#define EPD_PRE_X 4
+#define EPD_IMG_W  32
+#define EPD_IMG_H  32
+#define BMP_HDR_SZ 62
+#define BMP_FIL_SZ (BMP_HDR_SZ + EPD_IMG_W * EPD_IMG_H / 8)
 enum disp_type {
   SERIAL_SCREEN,
   ST7920_128X64,
   SSD1322_256X64,
+  GxEPD2_213,
   MAX_PANEL_TYPE,
 };
 enum disp_val_type {
   INT,
   LOG,
+  IMG,
   DATE,
   FUNC,
   UINT8,
@@ -170,10 +184,12 @@ struct _Disp_outp {
 };
 void init_scr(Disp_outp *outp);
 void init_u8g2(Disp_outp *outp);
+void init_epd(Disp_outp *outp);
 void update_scr(Disp_outp *outp);
 void update_u8g2(Disp_outp *outp);
-Disp_init   d_inits[]   = {init_scr, init_u8g2, init_u8g2};
-Disp_render d_renders[] = {update_scr, update_u8g2, update_u8g2};
+void update_epd(Disp_outp *outp);
+Disp_init   d_inits[]   = {init_scr, init_u8g2, init_u8g2, init_epd};
+Disp_render d_renders[] = {update_scr, update_u8g2, update_u8g2, update_epd};
 
 #define RESET_PIN 6
 #define BOOT_PIN  7
@@ -233,13 +249,15 @@ Sys_stat sys_stat;
 #define SYS_PWM_PID_BIT      3
 #define SYS_MQTT_CONN_BIT    4
 #define SYS_REDRAW_SCR_BIT   5
-#define SYS_NEED_RESET_BIT   6
-#define SYS_NEED_BOOT_BIT    7
+#define SYS_REDRAW_EPD_BIT   6
+#define SYS_NEED_RESET_BIT   7
+#define SYS_NEED_BOOT_BIT    8
 #define SYS_WIFI_CONNECTED   bitRead(sys_stat.flags, SYS_WIFI_CONN_BIT)
 #define SYS_WIFI_CONNECTING  bitRead(sys_stat.flags, SYS_WIFI_CONI_BIT)
 #define SYS_CFG_LOADED       bitRead(sys_stat.flags, SYS_CFG_LOAD_BIT)
 #define SYS_PWM_PID_EN       bitRead(sys_stat.flags, SYS_PWM_PID_BIT)
 #define SYS_REDRAW_SCR       bitRead(sys_stat.flags, SYS_REDRAW_SCR_BIT)
+#define SYS_REDRAW_EPD       bitRead(sys_stat.flags, SYS_REDRAW_EPD_BIT)
 #define SYS_NEED_RESET       bitRead(sys_stat.flags, SYS_NEED_RESET_BIT)
 #define SYS_NEED_BOOT        bitRead(sys_stat.flags, SYS_NEED_BOOT_BIT)
 
@@ -1533,6 +1551,135 @@ void update_u8g2(Disp_outp *outp) {
   */
   u8g2.sendBuffer();
   #endif
+}
+
+void memcpy_mirror_x(uint8_t dest[], uint8_t src[], int16_t w, int16_t h)
+{
+  int16_t i, byte_w = (w + 7) / 8;
+
+  for (i = 0; i < h; i++)
+    memcpy(&dest[i * byte_w], &src[(h - i - 1) * byte_w], byte_w);
+}
+
+#define B_RT 8   // epd.width() / EPD_IMG_W
+#define B_RT_IMG "/btc%d.bmp"
+uint8_t *b_rt_buf[B_RT], b_rt_cnt;
+
+void init_epd(Disp_outp *outp) {
+  File f;
+  size_t ret;
+  void *val1;
+  char *fname;
+  enum disp_val_type type;
+  int i, j, n, x, y, val2_base, val2;
+  const GFXfont *font = &FreeMonoBold12pt7b;
+  uint8_t f_buf[BMP_FIL_SZ], *img_buf, fw, fh;
+  void *disp[][5] = {
+    {(void*)"/mhash.bmp", (void*)INT,   &(miners_s[0].t_hash), (void*)3, (void*)"M"},
+    {(void*)"/mtemp.bmp", (void*)FLOAT, &(miners_s[0].t_temp), (void*)4, (void*)"C"},
+    {(void*)"/mtime.bmp", (void*)INT,   &(miners_s[0].uptime), (void*)3, (void*)"H"} };
+
+  if (outp == NULL || outp->type != GxEPD2_213)
+    return;
+
+  if ('0' < font->first || '0' > font->last)
+    font = &FreeMonoBold12pt7b;
+
+  fw = font->glyph['0' - font->first].xAdvance;
+  fh = font->glyph['0' - font->first].height;
+  val2_base = (fw << 16) | (fh << 8);
+
+  n = sizeof(disp) / sizeof(disp[0]);
+  y = EPD_PRE_Y;
+  for (i = 0; i < sys_cfg.miners_num; i++) {
+    for (j = 0; j < n; j++) {
+      f = SPIFFS.open((const char *)disp[j][0], "r");
+      if (!f)
+        continue;
+      ret = f.readBytes((char *)f_buf, sizeof(f_buf));
+      f.close();
+      if (ret != sizeof(f_buf))
+        continue;
+
+      img_buf = (uint8_t *)malloc((EPD_IMG_H * EPD_IMG_W) >> 3);
+      if (!img_buf)
+        continue;
+
+      memcpy_mirror_x(img_buf, &f_buf[BMP_HDR_SZ], EPD_IMG_W, EPD_IMG_H);
+      type = (enum disp_val_type)(int)disp[j][1];
+      val1 = (void *)(disp[j][2] + i * sizeof(Miner_s));
+      val2 = val2_base | ((int)disp[j][3] & 0xFF);
+
+      x = EPD_PRE_X;
+      add_disp_val(outp, IMG, y, x, (void *)img_buf, 0);
+      x += (EPD_IMG_W + EPD_INT_X);
+      add_disp_val(outp, type, y + ((EPD_IMG_H + fh) >> 1), x, val1, val2);
+      add_disp_val(outp, STRING, y + ((EPD_IMG_H + fh) >> 1),
+                   epd.width() - fw - EPD_PRE_X - 7, disp[j][4], val2_base);
+      y += (EPD_IMG_H + EPD_INT_Y);
+    }
+  }
+
+  fname = strdup(B_RT_IMG);
+  b_rt_cnt = 0;
+  for (i = 0; i < B_RT; i++) {
+    sprintf(fname, B_RT_IMG, i);
+    f = SPIFFS.open((const char *)fname, "r");
+    if (!f)
+      continue;
+    ret = f.readBytes((char *)f_buf, sizeof(f_buf));
+    f.close();
+    if (ret != sizeof(f_buf))
+      continue;
+
+    b_rt_buf[i] = (uint8_t *)malloc((EPD_IMG_H * EPD_IMG_W) >> 3);
+    if (!b_rt_buf[i])
+      continue;
+
+    memcpy_mirror_x(b_rt_buf[i], &f_buf[BMP_HDR_SZ], EPD_IMG_W, EPD_IMG_H);
+  }
+
+  epd.init();
+  epd.fillScreen(GxEPD_WHITE);
+  epd.setTextColor(GxEPD_BLACK);
+  epd.setFont(font);
+  bitSet(sys_stat.flags, SYS_REDRAW_EPD_BIT);
+}
+
+void update_epd(Disp_outp *outp) {
+  int i, changed, redraw, fw, fh, orig_val2;
+  Disp_val *dval;
+  String str;
+
+  redraw = SYS_REDRAW_EPD;
+  bitClear(sys_stat.flags, SYS_REDRAW_EPD_BIT);
+  for (i = 0; i < outp->last_val; i++) {
+    dval = &outp->disp_val[i];
+    if (dval->type == IMG && redraw) {
+      epd.drawInvertedBitmap(dval->x, dval->y, (uint8_t *)dval->val1,
+                             EPD_IMG_W, EPD_IMG_H, GxEPD_BLACK);
+      continue;
+    }
+    orig_val2 = dval->val2;
+    dval->val2 &= 0xFF;
+    changed = check_disp_val(dval, redraw, str);
+    dval->val2 = orig_val2;
+    if (changed) {
+      fw = (orig_val2 >> 16) & 0xFF;
+      fh = (orig_val2 >> 8) & 0xFF;
+      epd.fillRect(dval->x, dval->y - fh, str.length() * fw + 1,
+                   fh + 1, GxEPD_WHITE);
+      epd.setCursor(dval->x, dval->y);
+      epd.print(str);
+    }
+  }
+
+  epd.fillRect(0, epd.height() - EPD_IMG_H, epd.width(), EPD_IMG_H, GxEPD_WHITE);
+  epd.drawInvertedBitmap((b_rt_cnt & 7) * 16, epd.height() - EPD_IMG_H,
+                b_rt_buf[(b_rt_cnt & 7)], EPD_IMG_W, EPD_IMG_H, GxEPD_BLACK);
+  b_rt_cnt++;
+
+  epd.display(true);
 }
 
 void init_display() {
