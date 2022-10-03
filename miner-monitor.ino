@@ -86,6 +86,7 @@ enum miner_type {
   CLAYMORE_ETH,
   CLAYMORE_ZEC,
   ZM_ZEC,
+  NBMINER,
 };
 typedef struct {
   char *ip_host;
@@ -95,6 +96,8 @@ typedef struct {
 #ifdef USE_ASYNC_TCP
   AsyncClient *asc;
 #endif
+#define MAX_MINER_STATE_BUFF 2048
+  char *buff;
 } Miner;
 Miner *miners;
 #define OFFLINE_TH 30
@@ -388,6 +391,12 @@ void setup() {
         miners[i].port    = json_miner["PORT"].as<uint16_t>();
         miners[i].enabled = json_miner["ENABLED"].as<short>();
         miners[i].type    = (enum miner_type)json_miner["TYPE"].as<int>();
+        if (miners[i].type == NBMINER) {
+          miners[i].buff = (char *)malloc(MAX_MINER_STATE_BUFF);
+          miners[i].buff[0] = 0;
+        } else {
+          miners[i].buff = NULL;
+        }
       }
     }
   }
@@ -627,8 +636,8 @@ void as_onDisconnect(void *arg, AsyncClient *c) {
 }
 void as_onData(void *arg, AsyncClient *c, void *data, size_t len) {
   //dlog("Data : " + String((uint32_t)c, HEX) + " idx: " + String((int)arg) + " " + String(len) +"\r\n");
-  parse_miner_state((int)arg, (char *)data);
-  dump_miner_state((int)arg);
+  if (parse_miner_state((int)arg, (char *)data, len))
+    dump_miner_state((int)arg);
 }
 void as_onConnect(void *arg, AsyncClient *c) {
   //dlog("Connected : " + String((uint32_t)c, HEX) + " idx: " + String((int)arg) + "\r\n");
@@ -1122,6 +1131,8 @@ char* query_miner_state(int i) {
       return "{\"id\":0,\"jsonrpc\":\"2.0\",\"method\":\"miner_getstat1\"}\r\n";
     case ZM_ZEC:
       return "{\"id\":1, \"method\":\"getstat\"}\r\n";
+    case NBMINER:
+      return "GET /api/v1/status HTTP/1.0\r\n\r\n";
     default:
       return NULL;
   }
@@ -1145,11 +1156,29 @@ void dump_miner_state(int i) {
   }
 }
 
-void parse_miner_state(int i, char *str) {
+bool parse_miner_state(int i, char *data, size_t len) {
   DynamicJsonDocument root(2048);
   int j, tmp_array[MAX_GPU_PER_MINER * 2];
+  char *str = data;
 
-  deserializeJson(root, str);
+  // special handle for NBMINER, as the miner stat data are long
+  // and include a HTTP header.
+  if (miners[i].type == NBMINER) {
+    if (strlen(miners[i].buff) + len >= MAX_MINER_STATE_BUFF)
+      miners[i].buff[0] = 0;
+    strncat(miners[i].buff, data, len);
+    str = strchr(miners[i].buff, '{');
+    if (str == NULL)
+      return false;
+  }
+
+  DeserializationError err = deserializeJson(root, (const char*)str);
+  //dlog(String("Parsing miner") + i + ": " + err.c_str() + "\r\n");
+  if (err)
+    return false;
+
+  if (miners[i].type == NBMINER)
+      miners[i].buff[0] = 0;
 
   switch (miners[i].type) {
     case PHOENIX:
@@ -1159,7 +1188,7 @@ void parse_miner_state(int i, char *str) {
         JsonArray result = root["result"];
         miners_s[i].uptime = result[1];
         str2array(result[2], ';', tmp_array, 3);
-        miners_s[i].t_hash = tmp_array[0];
+        miners_s[i].t_hash = tmp_array[0] / 1000;
         miners_s[i].t_accepted_s = tmp_array[1];
         miners_s[i].t_rejected_s = tmp_array[2];
         str2array(result[4], ';', tmp_array, 3);
@@ -1199,10 +1228,31 @@ void parse_miner_state(int i, char *str) {
         }
       }
       break;
+    case NBMINER:
+      {
+        miners_s[i].uptime = (time(NULL) - (int)root["start_time"]) / 60;
+        JsonArray result = root["miner"]["devices"];
+        miners_s[i].gpu_num = result.size();
+        miners_s[i].t_hash = (int)root["miner"]["total_hashrate_raw"] / 1000000;
+        miners_s[i].t_accepted_s = root["stratum"]["accepted_shares"];
+        miners_s[i].t_rejected_s = root["stratum"]["rejected_shares"];
+        miners_s[i].t_incorrect_s = root["stratum"]["invalid_shares"];
+        for (j = 0; j < miners_s[i].gpu_num; j++) {
+          miners_s[i].hash[j] = (int)result[j]["hashrate_raw"] / 1000000;
+          miners_s[i].temp[j] = result[j]["temperature"];
+          miners_s[i].fan[j] = result[j]["fan"];
+          miners_s[i].accepted_s[j] = result[j]["accepted_shares"];
+          miners_s[i].rejected_s[j] = result[j]["rejected_shares"];
+          miners_s[i].incorrect_s[j] = result[j]["invalid_shares"];
+        }
+      }
+      break;
     default:
       break;
   }
   miners_s[i].t_temp = average(miners_s[i].temp, miners_s[i].gpu_num);
+
+  return true;
 }
 
 void Arduino_putchar(uint8_t c) {
