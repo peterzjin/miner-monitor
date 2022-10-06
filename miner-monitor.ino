@@ -124,6 +124,7 @@ typedef struct {
 Miner_s *miners_s;
 
 #define SCREEN_LINES 60
+#define SCREEN_MAX_LINE_LEN 80
 #define MAX_SCR_VAL 160
 #define EPD_PRE_Y 2
 #define EPD_INT_X 4
@@ -1172,11 +1173,14 @@ bool parse_miner_state(int i, char *data, size_t len) {
       return false;
   }
 
+  // use (const char*) here to make sure deserializeJson will not write to str.
   DeserializationError err = deserializeJson(root, (const char*)str);
   //dlog(String("Parsing miner") + i + ": " + err.c_str() + "\r\n");
   if (err)
     return false;
 
+  //data[len] = 0;
+  //dlog(String(str) + "\r\n");
   if (miners[i].type == NBMINER)
       miners[i].buff[0] = 0;
 
@@ -1282,6 +1286,7 @@ void scr_log(Disp_outp *outp, const char *str) {
       vlog->x = 0;
     } else {
       mvaddch(vlog->y, vlog->x++, ch);
+      vlog->x %= SCREEN_MAX_LINE_LEN;
     }
   }
 
