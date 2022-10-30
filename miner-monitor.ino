@@ -96,7 +96,7 @@ typedef struct {
 #ifdef USE_ASYNC_TCP
   AsyncClient *asc;
 #endif
-#define MAX_MINER_STATE_BUFF 2048
+#define MAX_MINER_STATE_BUFF 4096
   char *buff;
 } Miner;
 Miner *miners;
@@ -185,6 +185,7 @@ struct _Disp_outp {
   Disp_val       disp_val[MAX_SCR_VAL];
   Disp_render    render;
   Disp_init      init;
+  void           *priv;
 };
 void init_scr(Disp_outp *outp);
 void init_u8g2(Disp_outp *outp);
@@ -1158,7 +1159,7 @@ void dump_miner_state(int i) {
 }
 
 bool parse_miner_state(int i, char *data, size_t len) {
-  DynamicJsonDocument root(2048);
+  DynamicJsonDocument root(4096);
   int j, tmp_array[MAX_GPU_PER_MINER * 2];
   char *str = data;
 
@@ -1410,6 +1411,8 @@ void init_scr(Disp_outp *outp) {
 
   /* Miner0 | 6 | ONLINE | 170MH/s | 36.33c | 00D23H13M | A/R/I: 3312/1/0 99.00% */
   for (i = 0; i < sys_cfg.miners_num; i++) {
+    if (!miners[i].enabled)
+      continue;
     sprintf(c_str = strdup(" Miner0 | "), " Miner%d | ", i);
     offset = 0;
     offset = add_disp_val(outp, STRING, row, offset, c_str, 0);
@@ -1475,16 +1478,20 @@ void init_u8g2(Disp_outp *outp) {
   u8g2.setBusClock(500000);
   u8g2.begin();
 
+  if (outp->type == SSD1322_256X64) {
+
 /*
  S | AI:18.37|AO:31.31|WI:31.56|WO:33.56
  F | 28/38|4095|4125|3855|5970|5820|5775
  F | 28/38|4095|4125|3855|5970|5820|5775
  B | 2.22L|4095|4125|3855|5970|5820|3.1A
  M | 70M|36.3|00D23H13M|3312/10/00 99.00
+ M | 70M|36.3|00D23H13M|3312/10/00 99.00
  */
+#define SSD1322_256X64_MAX_MINERS 2
 
-  if (outp->type == SSD1322_256X64) {
     int x, y, i, j;
+    Miner_s *d_miners;
 
     u8g2.setContrast(0);
     u8g2.setFont(u8g2_font_t0_12_mr);
@@ -1526,25 +1533,35 @@ void init_u8g2(Disp_outp *outp) {
                             &sys_stat.ttp_stat[1].acs712_val, (int)conv_acs712);
     }
 
-    for (i = 0; i < sys_cfg.miners_num; i++) {
+    d_miners = (Miner_s *)malloc(sizeof(Miner_s) * SSD1322_256X64_MAX_MINERS);
+    for (i = 0; i < SSD1322_256X64_MAX_MINERS; i++) {
       y += 10;
       x = add_disp_val(outp, STRING, y, 0, (void *)"M | ", 0);
-      x = add_disp_val(outp, INT, y, x, &(miners_s[i].t_hash), 2);
+      x = add_disp_val(outp, INT, y, x, &(d_miners[i].t_hash), 3);
       x = add_disp_val(outp, STRING, y, x, (void *)"M|", 0);
-      x = add_disp_val(outp, FLOAT, y, x, &(miners_s[i].t_temp), 4);
+      x = add_disp_val(outp, FLOAT, y, x, &(d_miners[i].t_temp), 4);
       x = add_disp_val(outp, STRING, y, x, (void *)"|", 0);
-      x = add_disp_val(outp, TIME_SPAN, y, x, &(miners_s[i].uptime), 0);
+      x = add_disp_val(outp, TIME_SPAN, y, x, &(d_miners[i].uptime), 0);
       x = add_disp_val(outp, STRING, y, x, (void *)"|", 0);
-      add_disp_val(outp, SHARE_STATE, y, x, &(miners_s[i].t_accepted_s), 0);
+      add_disp_val(outp, SHARE_STATE, y, x, &(d_miners[i].t_accepted_s), 0);
     }
+    outp->priv = d_miners;
   }
 }
 
 void update_u8g2(Disp_outp *outp) {
   if (outp->type == SSD1322_256X64) {
-    int i, changed, redraw = 1;//SYS_REDRAW_SCR;
+    int i, j, changed, redraw = 1;//SYS_REDRAW_SCR;
     Disp_val *disp_val = outp->disp_val;
+    Miner_s *d_miners = (Miner_s *)outp->priv;
     String str;
+
+    memset (outp->priv, 0, sizeof(Miner_s) * SSD1322_256X64_MAX_MINERS);
+    for (i = 0, j = 0; i < sys_cfg.miners_num && j < SSD1322_256X64_MAX_MINERS; i++) {
+      if (!miners[i].enabled || miners_s[i].gpu_num == 0)
+        continue;
+      memcpy(&d_miners[j++], &miners_s[i], sizeof(Miner_s));
+    }
 
     u8g2.clearBuffer();
     for (i = 0; i < outp->last_val; i++) {
@@ -1588,7 +1605,7 @@ void update_u8g2(Disp_outp *outp) {
         + "h " + sys_stat.freeheap + " " + sys_stat.rpm[0][4];
   u8g2.drawStr(0, 23, str.c_str());
   str = String();
-  for (i = 1; i < sys_cfg.miners_num; i++)
+  for (i = 0; i < sys_cfg.miners_num; i++)
     if (miners[i].enabled)
       str += String(miners_s[i].t_hash) + "m " + (int)miners_s[i].t_temp + "c "
           + (miners_s[i].gpu_num ? miners_s[i].uptime : miners_s[i].offtime) / 60
